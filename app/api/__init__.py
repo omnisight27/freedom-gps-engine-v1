@@ -10,6 +10,7 @@ from app.api import (
     scores,
     shadow_ledger,
     users,
+    vault,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "scores",
     "shadow_ledger",
     "users",
+    "vault",
 ]

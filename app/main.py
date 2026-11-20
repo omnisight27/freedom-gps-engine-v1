@@ -22,6 +22,7 @@ from app.api import (
     shadow_ledger,
     state_vector,
     users,
+    vault,
 )
 from app.config import settings
 
@@ -53,6 +54,7 @@ app.include_router(scenarios.router)
 app.include_router(shadow_ledger.router)
 app.include_router(state_vector.router)
 app.include_router(entities.router)
+app.include_router(vault.router)
 
 
 @app.get("/", tags=["meta"])

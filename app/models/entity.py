@@ -78,6 +78,15 @@ class Entity(Base):
         cascade="all, delete-orphan",
     )
     state_vectors = relationship("StateVector", back_populates="entity")
+    # Sprint 2 — Knowledge Vault records owned by this entity.
+    # (EvidenceRecord links to a KnowledgeAsset, not to an entity.)
+    knowledge_assets = relationship(
+        "KnowledgeAsset", back_populates="entity"
+    )
+    skills = relationship("Skill", back_populates="entity")
+    certifications = relationship("Certification", back_populates="entity")
+    family_records = relationship("FamilyRecord", back_populates="entity")
+    legacy_assets = relationship("LegacyAsset", back_populates="entity")
 
 
 class EntityRelationship(Base):

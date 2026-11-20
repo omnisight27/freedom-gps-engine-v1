@@ -13,13 +13,28 @@ from app.models.scenario import Scenario
 from app.models.score_snapshot import ScoreSnapshot
 from app.models.state_vector import StateVector
 from app.models.user import User
+from app.models.vault import (
+    AuditLog,
+    Certification,
+    EvidenceRecord,
+    FamilyRecord,
+    KnowledgeAsset,
+    LegacyAsset,
+    Skill,
+)
 
 __all__ = [
     "Asset",
+    "AuditLog",
     "CashFlow",
+    "Certification",
     "Entity",
     "EntityRelationship",
+    "EvidenceRecord",
+    "FamilyRecord",
     "HiddenAsset",
+    "KnowledgeAsset",
+    "LegacyAsset",
     "Liability",
     "OmniSightSignal",
     "Profile",
@@ -27,6 +42,7 @@ __all__ = [
     "Report",
     "Scenario",
     "ScoreSnapshot",
+    "Skill",
     "StateVector",
     "User",
 ]

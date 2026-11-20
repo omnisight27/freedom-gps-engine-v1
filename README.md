@@ -101,6 +101,122 @@ Run the Sprint 1 tests with the rest of the suite: `python -m pytest -q`
 (77 tests: the original 52 plus 25 new entity / state-vector-service
 tests in `tests/test_entities.py`).
 
+## Engine v1 — Sprint 2
+
+Branch: **`freedom-gps-engine-v1`** (Engineering Order 002 — the formal
+Sprint 2 definition).
+
+Sprint 2 adds the Knowledge Vault — the memory of Engine v1. It stores,
+organizes, links, and retrieves knowledge, memory, legacy, and evidence
+records associated with any entity. Every record belongs to an entity,
+supports evidence, and supports lineage. No new scores, no new score
+formulas, no Governance, no AI agents, no Opportunity Engine (deferred
+to Sprint 4), and no Neo4j integration in this sprint.
+
+### Models (`app/models/vault.py`, migration `alembic/versions/0004_vault.py`)
+
+- **KnowledgeAsset** — the unified vault record: entity_id, title,
+  description, category (Skill, Certification, Document, Research,
+  Process, Lesson, Historical Record, Family Record, Legacy Asset),
+  content_type, status (default `active`), confidence (0–1).
+  Lineage: `created_by` (the creating user), `source`, `version`
+  (starts at 1, increments on update), `last_updated` (the asset's
+  `updated_at`, exposed under the lineage name), and a computed
+  `evidence_count`.
+- **EvidenceRecord** — attached to a KnowledgeAsset
+  (`knowledge_asset_id`, not to an entity): source, source_type
+  (Document, Transcript, Certificate, User Assertion, Government
+  Record, Archive Record, Manual Entry), confidence (0–1),
+  collected_at, notes. Multiple evidence records per asset.
+- **Skill** — entity_id, name, proficiency, years_experience,
+  verified (default false). A skill may have many evidence records:
+  it carries an optional `knowledge_asset_id` FK to its
+  KnowledgeAsset representation, so evidence attaches through the
+  asset. There is no `monetized` field and no opportunity link in
+  Sprint 2.
+- **Certification** — entity_id, issuer, title, issue_date,
+  expiration_date, credential_id. No `utilized` field in Sprint 2.
+- **FamilyRecord** — entity_id, title, record_type (Biography,
+  Genealogy, Historical Event, Oral History, Artifact, Letter),
+  description, date_recorded. No `related_entity_id`, `relationship`,
+  or `preservation_plan` field in Sprint 2.
+- **LegacyAsset** — entity_id, title, asset_type (Book, Patent,
+  Research, Archive, Training, Community Project, IP),
+  estimated_impact (abstract units — never dollars),
+  preservation_status. Preservation tracking is required.
+- **AuditLog** (Event / Epic 2.8) — event_type, entity_id (nullable),
+  record_type, record_id, actor (the user), timestamp, details.
+  Creation writes `knowledge_created` (KnowledgeAsset), `skill_added`
+  (Skill), `certification_added` (Certification), and `legacy_created`
+  (LegacyAsset). FamilyRecord creation is also written to the audit
+  log, but with no invented named event type — the entry carries
+  `event_type` NULL and the record_type / record_id carry the record.
+  Updating a LegacyAsset's `preservation_status` writes a
+  `legacy_preservation_updated` entry.
+
+Deleting a KnowledgeAsset deletes its EvidenceRecords (CASCADE);
+Skills linked to it keep their row and lose the link (SET NULL).
+
+### API (`app/api/vault.py`, schemas in `app/schemas/vault.py`)
+
+All endpoints live under `/api/v1` and require auth; writes require
+ownership of the entity, following the Sprint 1 pattern.
+
+- Unified Knowledge APIs (Epic 2.7): `POST /knowledge`,
+  `GET /knowledge/{id}`, `PUT /knowledge/{id}`,
+  `DELETE /knowledge/{id}`, `GET /entities/{id}/knowledge`
+  (paginated), `GET /knowledge/{id}/lineage`.
+- Per-registry CRUD: Skills (`/skills`, `GET /entities/{id}/skills`),
+  Certifications (`/certifications`), FamilyRecords
+  (`/family-records`), LegacyAssets (`/legacy-assets`) — create, list
+  with `?entity_id=`, get, PATCH, delete.
+- Evidence: `POST /knowledge/{id}/evidence` (attach),
+  `GET /knowledge/{id}/evidence` (list).
+- Inventory: `GET /entities/{id}/knowledge-inventory` — counts and
+  lists of skills, certifications, and knowledge assets.
+- Audit log: `GET /vault/audit-log` (filter by `event_type`,
+  `entity_id`, `record_type`, `record_id`).
+
+### The four Sprint 2 missing-edge queries
+
+`GET /api/v1/vault/queries/` — each scoped to the caller's
+accessible entities, with an optional `?entity_id=` filter:
+
+- `knowledge-no-evidence` — KnowledgeAssets with `evidence_count = 0`.
+- `skills-no-evidence` — Skills with no linked KnowledgeAsset
+  evidence (no asset, or an asset with no evidence).
+- `certifications-no-evidence` — Certifications with no evidence.
+  Sprint 2 gives Certification no asset link, so this matches by
+  (entity, category `"Certification"`, title) against evidenced
+  KnowledgeAssets; a direct asset link is a Sprint 3 consideration.
+- `legacy-no-preservation-status` — LegacyAssets with no
+  `preservation_status` set (NULL or empty).
+
+The five queries from the earlier Sprint 2 brief
+(skills-not-linked-to-revenue, knowledge-not-linked-to-opportunities,
+family-without-preservation-plans, certifications-not-utilized,
+documents-without-graph-relationships) are **not** implemented as
+stated: they need opportunity links, revenue links, utilization, and
+graph relationships that are not in Sprint 2's scope. They become
+fully answerable in Sprint 3 (graph) and Sprint 4 (opportunity); the
+four endpoints above are their Sprint 2 equivalents.
+
+### Tests
+
+`tests/test_vault.py` — 37 tests: the eight formal acceptance tests
+(AT-001 Knowledge Asset Lifecycle, AT-002 Evidence Attachment,
+AT-003 Skill Verification, AT-004 Legacy Asset Preservation,
+AT-005 Family Record Retrieval, AT-006 Entity Knowledge Inventory,
+AT-007 State Vector Event Generation, AT-008 OpenAPI Contract) plus
+per-model CRUD and validation, lineage, audit-log, the four queries,
+and ownership / 404 / 422 / 401 coverage.
+
+Run the full suite with `python -m pytest -q` (114 tests: the 77 from
+Sprint 1 plus 37 new vault tests). The endpoint tests use an
+in-memory SQLite database via aiosqlite (test-only — production runs
+PostgreSQL) with foreign keys enabled so the CASCADE / SET NULL
+delete rules are exercised.
+
 ## Endpoints
 
 ### Meta
@@ -178,6 +294,49 @@ tests in `tests/test_entities.py`).
 | GET | `/api/v1/entities/{entity_id}/relationships` | Every relationship the entity participates in, with direction |
 | GET | `/api/v1/entities/{entity_id}/neighbors` | Neighboring entities with the relationship that connects them |
 
+### Knowledge Vault (Engine v1 Sprint 2, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/knowledge` | Create a KnowledgeAsset (version 1; caller becomes `created_by`) |
+| GET | `/api/v1/knowledge/{asset_id}` | One KnowledgeAsset |
+| PUT | `/api/v1/knowledge/{asset_id}` | Replace a KnowledgeAsset (version increments) |
+| DELETE | `/api/v1/knowledge/{asset_id}` | Delete a KnowledgeAsset (its evidence goes with it) |
+| GET | `/api/v1/knowledge/{asset_id}/lineage` | Lineage: `created_by`, `source`, `version`, `last_updated`, `evidence_count` |
+| POST | `/api/v1/knowledge/{asset_id}/evidence` | Attach an EvidenceRecord to the asset |
+| GET | `/api/v1/knowledge/{asset_id}/evidence` | List the asset's evidence |
+| GET | `/api/v1/entities/{entity_id}/knowledge` | The entity's KnowledgeAssets, paginated |
+| GET | `/api/v1/entities/{entity_id}/knowledge-inventory` | Counts and lists of skills, certifications, knowledge assets |
+| POST | `/api/v1/skills` | Create a Skill (optional `knowledge_asset_id` links its evidence) |
+| GET | `/api/v1/skills` | List skills; filter with `?entity_id=` |
+| GET | `/api/v1/skills/{skill_id}` | One Skill |
+| PATCH | `/api/v1/skills/{skill_id}` | Update a Skill (e.g. `verified: true`) |
+| DELETE | `/api/v1/skills/{skill_id}` | Delete a Skill |
+| GET | `/api/v1/entities/{entity_id}/skills` | The entity's Skills, paginated |
+| POST | `/api/v1/certifications` | Create a Certification |
+| GET | `/api/v1/certifications` | List certifications; filter with `?entity_id=` |
+| GET | `/api/v1/certifications/{certification_id}` | One Certification |
+| PATCH | `/api/v1/certifications/{certification_id}` | Update a Certification |
+| DELETE | `/api/v1/certifications/{certification_id}` | Delete a Certification |
+| GET | `/api/v1/entities/{entity_id}/certifications` | The entity's Certifications, paginated |
+| POST | `/api/v1/family-records` | Create a FamilyRecord |
+| GET | `/api/v1/family-records` | List family records; filter with `?entity_id=` |
+| GET | `/api/v1/family-records/{record_id}` | One FamilyRecord |
+| PATCH | `/api/v1/family-records/{record_id}` | Update a FamilyRecord |
+| DELETE | `/api/v1/family-records/{record_id}` | Delete a FamilyRecord |
+| GET | `/api/v1/entities/{entity_id}/family-records` | The entity's FamilyRecords, paginated |
+| POST | `/api/v1/legacy-assets` | Create a LegacyAsset |
+| GET | `/api/v1/legacy-assets` | List legacy assets; filter with `?entity_id=` |
+| GET | `/api/v1/legacy-assets/{asset_id}` | One LegacyAsset |
+| PATCH | `/api/v1/legacy-assets/{asset_id}` | Update a LegacyAsset (setting `preservation_status` writes an audit entry) |
+| DELETE | `/api/v1/legacy-assets/{asset_id}` | Delete a LegacyAsset |
+| GET | `/api/v1/entities/{entity_id}/legacy-assets` | The entity's LegacyAssets, paginated |
+| GET | `/api/v1/vault/queries/knowledge-no-evidence` | KnowledgeAssets with no evidence |
+| GET | `/api/v1/vault/queries/skills-no-evidence` | Skills with no linked evidence |
+| GET | `/api/v1/vault/queries/certifications-no-evidence` | Certifications with no evidence |
+| GET | `/api/v1/vault/queries/legacy-no-preservation-status` | LegacyAssets with no preservation status |
+| GET | `/api/v1/vault/audit-log` | Audit entries; filter with `?event_type=`, `?entity_id=`, `?record_type=`, `?record_id=` |
+
 ## Scoring engines
 
 All engines live in `app/engines/` as pure functions (numbers in, score
@@ -235,10 +394,14 @@ examples:
 
 User, Profile, Asset, Liability, CashFlow, HiddenAsset, ScoreSnapshot,
 Scenario, Report, OmniSightSignal, Recommendation, StateVector, Entity,
-EntityRelationship. See `alembic/versions/0001_initial.py` for the v1
-schema, `alembic/versions/0002_state_vector.py` for the state vector
-table, and `alembic/versions/0003_entities.py` for the Sprint 1 entity
-tables (plus `entity_id` on `state_vectors`).
+EntityRelationship, KnowledgeAsset, EvidenceRecord, Skill,
+Certification, FamilyRecord, LegacyAsset, AuditLog. See
+`alembic/versions/0001_initial.py` for the v1 schema,
+`alembic/versions/0002_state_vector.py` for the state vector table,
+`alembic/versions/0003_entities.py` for the Sprint 1 entity tables
+(plus `entity_id` on `state_vectors`), and
+`alembic/versions/0004_vault.py` for the Sprint 2 Knowledge Vault
+tables and the audit log.
 
 ## State Vector Ω(t)
 
