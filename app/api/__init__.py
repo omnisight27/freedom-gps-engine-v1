@@ -2,6 +2,7 @@
 
 from app.api import (
     assets,
+    entities,
     liabilities,
     omnisight,
     reports,
@@ -13,6 +14,7 @@ from app.api import (
 
 __all__ = [
     "assets",
+    "entities",
     "liabilities",
     "omnisight",
     "reports",

@@ -64,6 +64,43 @@ plus the public API endpoints (root, health, scores, OmniSight signals,
 Shadow Ledger valuation, scenario stress test). The score endpoints need
 no database and no auth, so the suite runs without a live PostgreSQL.
 
+## Engine v1 — Sprint 1
+
+Branch: **`freedom-gps-engine-v1`** (Engineering Order 001).
+
+Sprint 1 adds the Identity foundation of Engine v1 to this repository:
+
+- **Entity model** (`app/models/entity.py`) — Person, Family, Business,
+  Nonprofit, Community. An entity is the node of the Knowledge Graph
+  and the owner of a state vector; Identity is the root node of all
+  value measurement.
+- **EntityRelationship model** (same file) — owns, member_of, works_with,
+  inherits, contributes_to. Edges carry a confidence score (0–1) and a
+  source so every relationship traces to evidence.
+- **State Vector Service** (`app/services/state_vector_service.py`) —
+  record a snapshot for an entity, get its latest snapshot and history,
+  and compute the GP$ Master Index for a snapshot. All math reuses the
+  existing `app/engines/master_index.py`; nothing here re-implements a
+  formula, and the Master Index coefficients are unchanged (uncalibrated
+  placeholders, `calibrated: false`).
+- **Entities API** (`app/api/entities.py`) — create/list/get/update
+  entities, create/list relationships, list neighbors.
+- **Entity state-vector endpoints** (in `app/api/state_vector.py`) —
+  record a snapshot for an entity, list its history, fetch its latest,
+  and compute its Master Index from the latest snapshot.
+- **Migration** `alembic/versions/0003_entities.py` — creates the
+  `entities` and `entity_relationships` tables and adds an optional
+  `entity_id` to `state_vectors`.
+
+Ownership rule: an entity's owner is its creator; owned entities are
+visible only to their owner, while unowned entities are shared. Writes
+require ownership. A self-relationship is rejected (400); an unknown
+relationship type is rejected (422).
+
+Run the Sprint 1 tests with the rest of the suite: `python -m pytest -q`
+(77 tests: the original 52 plus 25 new entity / state-vector-service
+tests in `tests/test_entities.py`).
+
 ## Endpoints
 
 ### Meta
@@ -124,6 +161,22 @@ no database and no auth, so the suite runs without a live PostgreSQL.
 | GET | `/api/v1/state-vector/{user_id}` | List the caller's snapshots, latest first |
 | GET | `/api/v1/state-vector/{user_id}/latest` | The caller's latest snapshot (404 when none recorded) |
 | POST | `/api/v1/state-vector/master-index` | Pure computation (no DB, no auth): GP$ Master Index + Unified Prosperity Equation for one supplied state vector |
+| POST | `/api/v1/state-vector/entities/{entity_id}` | Record one snapshot of an entity's state vector Ω(t) |
+| GET | `/api/v1/state-vector/entities/{entity_id}` | List an entity's snapshots, latest first |
+| GET | `/api/v1/state-vector/entities/{entity_id}/latest` | An entity's latest snapshot (404 when none recorded) |
+| GET | `/api/v1/state-vector/entities/{entity_id}/master-index` | GP$ Master Index + Unified Prosperity Equation from an entity's latest snapshot |
+
+### Entities (Engine v1 Sprint 1, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/entities` | Create an entity (Person, Family, Business, Nonprofit, Community); caller becomes owner |
+| GET | `/api/v1/entities` | List the caller's entities plus shared (unowned) ones; filter with `?type=` |
+| GET | `/api/v1/entities/{entity_id}` | One entity, with every relationship it participates in |
+| PATCH | `/api/v1/entities/{entity_id}` | Update name / description (owner only; type never changes) |
+| POST | `/api/v1/entities/{entity_id}/relationships` | Create a directed relationship from this entity (owns, member_of, works_with, inherits, contributes_to) |
+| GET | `/api/v1/entities/{entity_id}/relationships` | Every relationship the entity participates in, with direction |
+| GET | `/api/v1/entities/{entity_id}/neighbors` | Neighboring entities with the relationship that connects them |
 
 ## Scoring engines
 
@@ -181,9 +234,11 @@ examples:
 ## Database entities (v1)
 
 User, Profile, Asset, Liability, CashFlow, HiddenAsset, ScoreSnapshot,
-Scenario, Report, OmniSightSignal, Recommendation, StateVector. See
-`alembic/versions/0001_initial.py` for the v1 schema and
-`alembic/versions/0002_state_vector.py` for the state vector table.
+Scenario, Report, OmniSightSignal, Recommendation, StateVector, Entity,
+EntityRelationship. See `alembic/versions/0001_initial.py` for the v1
+schema, `alembic/versions/0002_state_vector.py` for the state vector
+table, and `alembic/versions/0003_entities.py` for the Sprint 1 entity
+tables (plus `entity_id` on `state_vectors`).
 
 ## State Vector Ω(t)
 
@@ -241,6 +296,7 @@ freedom-gps-v1/
 │   ├── models/            # SQLAlchemy 2.0 models (v1 entities)
 │   ├── schemas/           # Pydantic v2 request/response models
 │   ├── engines/           # pure scoring functions
+│   ├── services/          # database-backed services (Engine v1)
 │   └── api/               # FastAPI routers
 ├── alembic/               # migrations (0001_initial creates all v1 tables)
 ├── tests/                 # pytest suite

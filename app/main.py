@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     assets,
+    entities,
     liabilities,
     omnisight,
     reports,
@@ -51,6 +52,7 @@ app.include_router(omnisight.router)
 app.include_router(scenarios.router)
 app.include_router(shadow_ledger.router)
 app.include_router(state_vector.router)
+app.include_router(entities.router)
 
 
 @app.get("/", tags=["meta"])

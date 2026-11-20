@@ -28,6 +28,15 @@ class StateVector(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
+    # The entity this snapshot measures. Nullable: v1 snapshots recorded
+    # before entities existed (and snapshots of a user with no entity)
+    # have no entity. When set, the snapshot belongs to that entity's
+    # time series as well as the recording user's.
+    entity_id: Mapped[int | None] = mapped_column(
+        ForeignKey("entities.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
     recorded_at: Mapped[object] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -51,3 +60,4 @@ class StateVector(Base):
     notes: Mapped[str] = mapped_column(String(500), nullable=False, default="")
 
     user = relationship("User", back_populates="state_vectors")
+    entity = relationship("Entity", back_populates="state_vectors")

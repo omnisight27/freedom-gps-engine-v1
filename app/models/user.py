@@ -29,3 +29,4 @@ class User(Base):
     reports = relationship("Report", back_populates="user")
     recommendations = relationship("Recommendation", back_populates="user")
     state_vectors = relationship("StateVector", back_populates="user")
+    entities = relationship("Entity", back_populates="owner")

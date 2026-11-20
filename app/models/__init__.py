@@ -2,6 +2,7 @@
 
 from app.models.asset import Asset
 from app.models.cash_flow import CashFlow
+from app.models.entity import Entity, EntityRelationship
 from app.models.hidden_asset import HiddenAsset
 from app.models.liability import Liability
 from app.models.omnisight_signal import OmniSightSignal
@@ -16,6 +17,8 @@ from app.models.user import User
 __all__ = [
     "Asset",
     "CashFlow",
+    "Entity",
+    "EntityRelationship",
     "HiddenAsset",
     "Liability",
     "OmniSightSignal",
