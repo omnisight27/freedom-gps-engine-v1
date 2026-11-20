@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_db
+from app.graph import build_graph_service
 from app.models.entity import Entity, EntityType
 from app.models.user import User
 from app.schemas.entity import (
@@ -64,6 +65,10 @@ async def create_entity(
     db.add(entity)
     await db.commit()
     await db.refresh(entity)
+    # Sprint 3: the entity's graph node is created automatically.
+    service = build_graph_service(db)
+    await service.sync_entity(entity)
+    await db.commit()
     return entity
 
 
@@ -115,6 +120,10 @@ async def update_entity(
         entity.description = payload.description
     await db.commit()
     await db.refresh(entity)
+    # Sprint 3: refresh the node's metadata (name may have changed).
+    service = build_graph_service(db)
+    await service.sync_entity(entity)
+    await db.commit()
     return entity
 
 
@@ -130,10 +139,16 @@ async def create_entity_relationship(
     db: AsyncSession = Depends(get_db),
 ) -> EntityRelationship:
     """Create a directed relationship from this entity. Rejects
-    self-relationships and unknown target entities."""
+    self-relationships and unknown target entities. The graph edge
+    between the two entity nodes is created automatically
+    (Sprint 3)."""
     from_entity = await get_entity_or_404(db, entity_id)
     assert_entity_owner(from_entity, current_user)
-    return await create_relationship(db, from_entity, payload)
+    rel = await create_relationship(db, from_entity, payload)
+    service = build_graph_service(db)
+    await service.sync_entity_relationship(rel)
+    await db.commit()
+    return rel
 
 
 @router.get(

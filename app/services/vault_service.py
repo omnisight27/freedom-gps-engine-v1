@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 
 from fastapi import HTTPException, status
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.entity import Entity
@@ -211,19 +211,28 @@ async def query_certifications_no_evidence(
 ) -> list[Certification]:
     """Certifications with no evidence.
 
-    The Sprint 2 schema gives Certification no asset link, so
-    evidence is matched by (entity, category "Certification",
-    title): a certification is evidenced when its entity holds a
-    Certification-category KnowledgeAsset of the same title with at
-    least one EvidenceRecord. A dedicated link is a Sprint 3
-    consideration, not smuggled in here.
+    Sprint 3: a certification is evidenced through its real
+    asset link (knowledge_asset_id) — the same pattern Skill has
+    had since Sprint 2. The title match is kept as a fallback
+    for certifications created before the link existed (same
+    entity + category "Certification" + same title, with
+    evidence): removing it would change the results for those
+    older records. The graph query (/graph/queries/...) uses the
+    link only — it is the canonical implementation going forward.
     """
     ids = await accessible_entity_ids(db, user)
     evidenced = (
         select(KnowledgeAsset.id)
-        .where(KnowledgeAsset.entity_id == Certification.entity_id)
-        .where(KnowledgeAsset.category == "Certification")
-        .where(KnowledgeAsset.title == Certification.title)
+        .where(
+            or_(
+                KnowledgeAsset.id == Certification.knowledge_asset_id,
+                and_(
+                    KnowledgeAsset.entity_id == Certification.entity_id,
+                    KnowledgeAsset.category == "Certification",
+                    KnowledgeAsset.title == Certification.title,
+                ),
+            )
+        )
         .where(
             exists().where(
                 EvidenceRecord.knowledge_asset_id == KnowledgeAsset.id

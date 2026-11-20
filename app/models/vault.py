@@ -243,7 +243,16 @@ class Skill(Base):
 
 
 class Certification(Base):
-    """One certification held by an entity."""
+    """One certification held by an entity.
+
+    Sprint 3 fix: a certification now carries an optional
+    knowledge_asset_id FK to its KnowledgeAsset representation
+    (category "Certification"), the same pattern Skill has had
+    since Sprint 2. Evidence attaches through the asset, so the
+    certifications-no-evidence query uses a real link instead of
+    matching by title. Certifications created before the link
+    existed keep working: the Vault query also honors the title
+    match as a fallback (see vault_service)."""
 
     __tablename__ = "certifications"
 
@@ -252,6 +261,11 @@ class Certification(Base):
         ForeignKey("entities.id", ondelete="CASCADE"),
         index=True,
         nullable=False,
+    )
+    knowledge_asset_id: Mapped[int | None] = mapped_column(
+        ForeignKey("knowledge_assets.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
     )
     issuer: Mapped[str | None] = mapped_column(String(200), nullable=True)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -273,6 +287,7 @@ class Certification(Base):
     )
 
     entity = relationship("Entity", back_populates="certifications")
+    asset = relationship("KnowledgeAsset")
 
 
 class FamilyRecord(Base):

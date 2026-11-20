@@ -186,9 +186,11 @@ accessible entities, with an optional `?entity_id=` filter:
 - `skills-no-evidence` — Skills with no linked KnowledgeAsset
   evidence (no asset, or an asset with no evidence).
 - `certifications-no-evidence` — Certifications with no evidence.
-  Sprint 2 gives Certification no asset link, so this matches by
-  (entity, category `"Certification"`, title) against evidenced
-  KnowledgeAssets; a direct asset link is a Sprint 3 consideration.
+  Sprint 3 gave Certification the same `knowledge_asset_id` link
+  Skill has, so this is now evidenced through the real link; the
+  (entity, category `"Certification"`, title) match is kept as a
+  fallback for certifications created before the link existed.
+  The graph query (`/graph/queries/...`) uses the link only.
 - `legacy-no-preservation-status` — LegacyAssets with no
   `preservation_status` set (NULL or empty).
 
@@ -211,11 +213,167 @@ AT-007 State Vector Event Generation, AT-008 OpenAPI Contract) plus
 per-model CRUD and validation, lineage, audit-log, the four queries,
 and ownership / 404 / 422 / 401 coverage.
 
-Run the full suite with `python -m pytest -q` (114 tests: the 77 from
-Sprint 1 plus 37 new vault tests). The endpoint tests use an
+Run the full suite with `python -m pytest -q` (114 tests at the
+time Sprint 2 landed — the current count is in the Sprint 3
+section below). The endpoint tests use an
 in-memory SQLite database via aiosqlite (test-only — production runs
 PostgreSQL) with foreign keys enabled so the CASCADE / SET NULL
 delete rules are exercised.
+
+## Engine v1 — Sprint 3
+
+Branch: **`freedom-gps-engine-v1`** (Engineering Order 003).
+
+Sprint 3 adds the Knowledge Graph Layer — the relationships of
+Engine v1. Every major object becomes a graph node, the links
+between them become graph edges, and a PostgreSQL-backed
+abstraction layer (`IGraphRepository`) stands between the business
+services and the storage so Neo4j can replace PostgreSQL later
+without rewriting the services. No Opportunity Engine, Trust
+Engine, Prosperity Engine, Forecasting, Recommendations, AI
+reasoning, or graph visualization in this sprint; no new scores.
+
+### Models (`app/models/graph.py`, migration `alembic/versions/0005_graph.py`)
+
+- **GraphNode** — one node per source record: `node_type`
+  (Entity, KnowledgeAsset, Skill, Certification, EvidenceRecord,
+  FamilyRecord, LegacyAsset), `source_id` (the source record's id),
+  `node_metadata` (JSON copy of the record's identifying fields —
+  name, title, category, …; the source record is the truth and
+  sync refreshes it). `(node_type, source_id)` is unique.
+- **GraphEdge** — one directed edge between two nodes:
+  `from_node_id`, `to_node_id`, `relationship_type` (OWNS,
+  HAS_SKILL, HAS_CERTIFICATION, HAS_EVIDENCE, HAS_RECORD,
+  HAS_LEGACY, RELATED_TO, MEMBER_OF, CONTRIBUTES_TO), `confidence`
+  (0–1, default 1.0), `source`, `created_at`. Lineage lives on the
+  edge itself: confidence, source, and created_at (AT-307).
+  `(from_node_id, to_node_id, relationship_type)` is unique.
+  Deleting a node deletes its edges (CASCADE).
+
+### The abstraction layer (`app/graph/`)
+
+- **IGraphRepository** (`app/graph/interface.py`) — the storage
+  contract: `create_node`, `get_node`, `get_node_by_source`,
+  `list_nodes`, `update_node_metadata`, `delete_node`,
+  `create_edge`, `get_edge`, `get_edge_by_triple`, `list_edges`,
+  `delete_edge`, `neighbors`. Storage primitives only; traversal,
+  path finding, sync, and queries live in the service so they work
+  against any backend. Repository methods flush; they do not
+  commit — the caller owns the transaction.
+- **PostgresGraphRepository** (`app/graph/postgres.py`) — the real
+  Engine v1 backend, backed by the `graph_nodes` / `graph_edges`
+  tables.
+- **Neo4jGraphRepository** (`app/graph/neo4j.py`) — a stub with the
+  same interface. Constructing it raises `NotImplementedError`
+  ("Neo4j is not configured for Engine v1"). It imports no neo4j
+  driver and requires no Neo4j server.
+- **GraphService** (`app/graph/service.py`) — the business service.
+  It depends ONLY on `IGraphRepository` (AT-308: the service module
+  imports no backend, and the acceptance test runs the service's
+  node / edge / traversal / path logic against an in-memory stub
+  repository). It owns idempotent node / edge get-or-create, the
+  automatic sync, the backfill, traversal, path finding, the
+  inventory queries, and audited manual relationships.
+
+### Automatic graph maintenance
+
+Node creation is automatic: when a record is created through the
+API, its graph node and edges are created with it (the hooks live
+in `app/api/vault.py` and `app/api/entities.py`).
+
+- **Entity** → its node. **KnowledgeAsset** → its node + OWNS from
+  its entity. **Skill** → its node + OWNS and HAS_SKILL from its
+  entity. **Certification** → its node + OWNS and HAS_CERTIFICATION.
+  **FamilyRecord** → its node + OWNS and HAS_RECORD. **LegacyAsset**
+  → its node + OWNS and HAS_LEGACY.
+- **EvidenceRecord** → its node + HAS_EVIDENCE from its asset, and
+  from every Skill / Certification linked to that asset.
+- **EntityRelationship** (Sprint 1) → one graph edge between the
+  two entity nodes: owns → OWNS, member_of → MEMBER_OF,
+  contributes_to → CONTRIBUTES_TO, works_with → RELATED_TO,
+  inherits → RELATED_TO.
+- Deleting a record deletes its graph node (edges go with it);
+  deleting a KnowledgeAsset also deletes its evidence nodes.
+  PATCHing a Skill / Certification's `knowledge_asset_id` resyncs
+  its evidence edges; only auto-created edges are ever removed by
+  a sync — a relationship a user made by hand is theirs to keep
+  (or delete through the API).
+- **POST /api/v1/graph/sync** backfills nodes and edges for every
+  record on every entity the caller may read. Idempotent: a second
+  run creates nothing. It returns `nodes_created`, `edges_created`,
+  and the totals.
+
+### The four graph inventory queries
+
+`GET /api/v1/graph/queries/` — each scoped to the caller's
+accessible entities, with an optional `?entity_id=` filter. The
+graph answers them: a record is unevidenced when its node has no
+outgoing HAS_EVIDENCE edge.
+
+- `skills-no-evidence` — Skills with no evidence.
+- `certifications-no-evidence` — Certifications with no evidence,
+  through the real asset link.
+- `knowledge-no-evidence` — KnowledgeAssets with no evidence.
+- `legacy-no-preservation-status` — LegacyAssets with no
+  `preservation_status` set. The node set comes from the graph;
+  the status itself is a source-record attribute, so the filter
+  reads the source rows.
+
+The old `/api/v1/vault/queries/` endpoints remain as-is (backward
+compatibility) — the graph queries are the canonical
+implementation going forward, and both return the same result
+sets for the four queries.
+
+### The Certification link fix
+
+Sprint 2's `certifications-no-evidence` matched by
+(entity, category `"Certification"`, title) because Certification
+had no asset link. Sprint 3 gives Certification an optional
+`knowledge_asset_id` FK to its KnowledgeAsset representation
+(migration `0005_graph.py`), the same pattern Skill has had since
+Sprint 2. The graph query uses the real link; the Vault query uses
+link OR title match so certifications created before the link
+existed keep their old results.
+
+### API (`app/api/graph.py`, schemas in `app/schemas/graph.py`)
+
+All endpoints live under `/api/v1/graph` and require auth. A node
+is readable when its source record's entity is readable; writing
+a relationship requires owning the from-node's entity (the Sprint 1
+ownership rule, unchanged). There is no POST `/graph/nodes` in
+Sprint 3 — nodes are created automatically.
+
+- Node API: `GET /graph/nodes` (filter with `?node_type=`),
+  `GET /graph/nodes/{id}`, `GET /graph/entities/{id}/graph` (the
+  entity's subgraph: its node, its 1-hop neighbors, and the edges
+  between them), `GET /graph/nodes/{id}/traverse?depth=2`
+  (breadth-first walk), `GET /graph/path?from_node_id=&to_node_id=`
+  (shortest path, AT-305).
+- Relationship API: `POST /graph/relationships` (validates both
+  nodes exist, rejects a self-edge with 400 and a duplicate with
+  409, writes a `graph_relationship_created` audit entry),
+  `GET /graph/relationships` (filter with `?from_node_id=`,
+  `?to_node_id=`, `?relationship_type=`),
+  `DELETE /graph/relationships/{id}` (writes a
+  `graph_relationship_deleted` audit entry).
+- `POST /graph/sync` — the backfill (see above).
+- The four inventory queries (see above).
+
+### Tests
+
+`tests/test_graph.py` — 26 tests: the eight formal acceptance
+tests (AT-301 Node Creation, AT-302 Relationship Creation, AT-303
+Evidence Connection, AT-304 Knowledge Inventory Query, AT-305
+Graph Traversal, AT-306 Audit Verification, AT-307 Lineage
+Verification, AT-308 Repository Abstraction) plus automatic nodes
+and edges for every record type, entity-relationship graph edges,
+manual relationship validation (400 / 404 / 409 / 422), subgraph,
+the four graph queries, the Certification link fix, node deletion
+with its record, ownership (403), the OpenAPI contract, and the
+sync backfill with idempotency.
+
+Run the full suite with `python -m pytest -q` (140 tests: the 114
+from Sprints 1–2 plus 26 new graph tests).
 
 ## Endpoints
 
@@ -337,6 +495,24 @@ delete rules are exercised.
 | GET | `/api/v1/vault/queries/legacy-no-preservation-status` | LegacyAssets with no preservation status |
 | GET | `/api/v1/vault/audit-log` | Audit entries; filter with `?event_type=`, `?entity_id=`, `?record_type=`, `?record_id=` |
 
+### Knowledge Graph (Engine v1 Sprint 3, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/graph/nodes` | Nodes the caller may read; filter with `?node_type=` |
+| GET | `/api/v1/graph/nodes/{node_id}` | One graph node |
+| GET | `/api/v1/graph/entities/{entity_id}/graph` | The entity's subgraph: its node, 1-hop neighbors, edges |
+| GET | `/api/v1/graph/nodes/{node_id}/traverse` | Breadth-first walk; `?depth=` (default 2, max 5) |
+| GET | `/api/v1/graph/path` | Shortest path; `?from_node_id=`, `?to_node_id=`, `?max_depth=` |
+| POST | `/api/v1/graph/relationships` | Create a relationship (self-edge 400, duplicate 409; audited) |
+| GET | `/api/v1/graph/relationships` | List relationships; filter with `?from_node_id=`, `?to_node_id=`, `?relationship_type=` |
+| DELETE | `/api/v1/graph/relationships/{edge_id}` | Delete a relationship (audited) |
+| POST | `/api/v1/graph/sync` | Backfill nodes + edges for all accessible records (idempotent) |
+| GET | `/api/v1/graph/queries/skills-no-evidence` | Skills with no evidence (graph) |
+| GET | `/api/v1/graph/queries/certifications-no-evidence` | Certifications with no evidence (graph, real link) |
+| GET | `/api/v1/graph/queries/knowledge-no-evidence` | KnowledgeAssets with no evidence (graph) |
+| GET | `/api/v1/graph/queries/legacy-no-preservation-status` | LegacyAssets with no preservation status (graph) |
+
 ## Scoring engines
 
 All engines live in `app/engines/` as pure functions (numbers in, score
@@ -395,13 +571,16 @@ examples:
 User, Profile, Asset, Liability, CashFlow, HiddenAsset, ScoreSnapshot,
 Scenario, Report, OmniSightSignal, Recommendation, StateVector, Entity,
 EntityRelationship, KnowledgeAsset, EvidenceRecord, Skill,
-Certification, FamilyRecord, LegacyAsset, AuditLog. See
+Certification, FamilyRecord, LegacyAsset, AuditLog, GraphNode,
+GraphEdge. See
 `alembic/versions/0001_initial.py` for the v1 schema,
 `alembic/versions/0002_state_vector.py` for the state vector table,
 `alembic/versions/0003_entities.py` for the Sprint 1 entity tables
-(plus `entity_id` on `state_vectors`), and
+(plus `entity_id` on `state_vectors`),
 `alembic/versions/0004_vault.py` for the Sprint 2 Knowledge Vault
-tables and the audit log.
+tables and the audit log, and
+`alembic/versions/0005_graph.py` for the Sprint 3 graph tables (plus
+`knowledge_asset_id` on `certifications`).
 
 ## State Vector Ω(t)
 
@@ -460,6 +639,7 @@ freedom-gps-v1/
 │   ├── schemas/           # Pydantic v2 request/response models
 │   ├── engines/           # pure scoring functions
 │   ├── services/          # database-backed services (Engine v1)
+│   ├── graph/             # IGraphRepository, Postgres + Neo4j repos, GraphService
 │   └── api/               # FastAPI routers
 ├── alembic/               # migrations (0001_initial creates all v1 tables)
 ├── tests/                 # pytest suite

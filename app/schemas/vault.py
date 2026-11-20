@@ -142,6 +142,9 @@ class CertificationCreate(BaseModel):
     issue_date: date | None = None
     expiration_date: date | None = None
     credential_id: str | None = Field(default=None, max_length=200)
+    # Sprint 3: the link to its KnowledgeAsset representation
+    # (category "Certification") — evidence attaches through it.
+    knowledge_asset_id: int | None = None
 
 
 class CertificationUpdate(BaseModel):
@@ -150,6 +153,7 @@ class CertificationUpdate(BaseModel):
     issue_date: date | None = None
     expiration_date: date | None = None
     credential_id: str | None = Field(default=None, max_length=200)
+    knowledge_asset_id: int | None = None
 
 
 class CertificationOut(BaseModel):
@@ -157,6 +161,7 @@ class CertificationOut(BaseModel):
 
     id: int
     entity_id: int
+    knowledge_asset_id: int | None
     issuer: str | None
     title: str
     issue_date: date | None

@@ -32,6 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_db
+from app.graph import build_graph_service
+from app.models.graph import GraphNodeType
 from app.models.user import User
 from app.models.vault import (
     AuditLog,
@@ -123,6 +125,10 @@ async def _create_row(
         )
     await db.commit()
     await db.refresh(row)
+    # Sprint 3: the record's graph node + edges (OWNS, the typed
+    # edge, and HAS_EVIDENCE through a linked asset) are created
+    # automatically.
+    await _sync_record_graph(db, model, row)
     return row
 
 
@@ -173,6 +179,45 @@ async def _delete_row(db: AsyncSession, model, row_id: int, user: User):
     await assert_record_owner(db, row, user)
     await db.delete(row)
     await db.commit()
+    await _delete_record_graph(db, model, row_id)
+
+
+# --- Graph sync (Sprint 3: node creation is automatic) ---
+
+async def _sync_record_graph(db: AsyncSession, model, row) -> None:
+    """Create / refresh a record's graph node and edges after the
+    record is created or changed. Commits the graph changes."""
+    service = build_graph_service(db)
+    sync = {
+        KnowledgeAsset: service.sync_knowledge_asset,
+        Skill: service.sync_skill,
+        Certification: service.sync_certification,
+        FamilyRecord: service.sync_family_record,
+        LegacyAsset: service.sync_legacy_asset,
+    }.get(model)
+    if sync is None:
+        return
+    await sync(row)
+    await db.commit()
+
+
+async def _delete_record_graph(
+    db: AsyncSession, model, row_id: int
+) -> None:
+    """Delete a record's graph node after the record is deleted
+    (its edges go with it). Commits the graph changes."""
+    node_type = {
+        KnowledgeAsset: GraphNodeType.KNOWLEDGE_ASSET.value,
+        Skill: GraphNodeType.SKILL.value,
+        Certification: GraphNodeType.CERTIFICATION.value,
+        FamilyRecord: GraphNodeType.FAMILY_RECORD.value,
+        LegacyAsset: GraphNodeType.LEGACY_ASSET.value,
+    }.get(model)
+    if node_type is None:
+        return
+    service = build_graph_service(db)
+    await service.delete_node_for_source(node_type, row_id)
+    await db.commit()
 
 
 # --- KnowledgeAsset (the unified vault record) ---
@@ -209,6 +254,9 @@ async def create_knowledge_asset(
     )
     await db.commit()
     await db.refresh(asset)
+    # Sprint 3: the asset's graph node + OWNS edge are created
+    # automatically.
+    await _sync_record_graph(db, KnowledgeAsset, asset)
     return asset
 
 
@@ -238,6 +286,9 @@ async def update_knowledge_asset(
     asset.version += 1
     await db.commit()
     await db.refresh(asset)
+    # Sprint 3: refresh the node's metadata (title / category may
+    # have changed).
+    await _sync_record_graph(db, KnowledgeAsset, asset)
     return asset
 
 
@@ -249,8 +300,27 @@ async def delete_knowledge_asset(
 ) -> None:
     """Delete a KnowledgeAsset. Its EvidenceRecords are deleted
     with it (CASCADE); Skills linked to it keep their row and lose
-    the link (SET NULL)."""
-    await _delete_row(db, KnowledgeAsset, asset_id, current_user)
+    the link (SET NULL). The asset's graph node and its evidence
+    nodes go with it (Sprint 3)."""
+    asset = await get_record_or_404(db, KnowledgeAsset, asset_id)
+    await assert_record_owner(db, asset, current_user)
+    result = await db.execute(
+        select(EvidenceRecord.id).where(
+            EvidenceRecord.knowledge_asset_id == asset.id
+        )
+    )
+    evidence_ids = list(result.scalars().all())
+    await db.delete(asset)
+    await db.commit()
+    service = build_graph_service(db)
+    await service.delete_node_for_source(
+        GraphNodeType.KNOWLEDGE_ASSET.value, asset_id
+    )
+    for evidence_id in evidence_ids:
+        await service.delete_node_for_source(
+            GraphNodeType.EVIDENCE_RECORD.value, evidence_id
+        )
+    await db.commit()
 
 
 @router.get(
@@ -316,6 +386,12 @@ async def attach_evidence(
     db.add(record)
     await db.commit()
     await db.refresh(record)
+    # Sprint 3: the evidence record's graph node + HAS_EVIDENCE
+    # edges (from the asset, and from every linked Skill /
+    # Certification) are created automatically.
+    service = build_graph_service(db)
+    await service.sync_evidence(record)
+    await db.commit()
     return record
 
 
@@ -406,8 +482,12 @@ async def update_skill(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Skill:
-    """Update a Skill — including marking verified=true (AT-003)."""
-    return await _patch_row(db, Skill, skill_id, payload, current_user)
+    """Update a Skill — including marking verified=true (AT-003).
+    A changed knowledge_asset_id resyncs the skill's evidence
+    edges (Sprint 3)."""
+    row = await _patch_row(db, Skill, skill_id, payload, current_user)
+    await _sync_record_graph(db, Skill, row)
+    return row
 
 
 @router.delete("/skills/{skill_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
@@ -490,9 +570,13 @@ async def update_certification(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Certification:
-    return await _patch_row(
+    """Update a Certification. A changed knowledge_asset_id
+    resyncs the certification's evidence edges (Sprint 3)."""
+    row = await _patch_row(
         db, Certification, certification_id, payload, current_user
     )
+    await _sync_record_graph(db, Certification, row)
+    return row
 
 
 @router.delete(
