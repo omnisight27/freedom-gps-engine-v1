@@ -14,6 +14,18 @@ from app.models.opportunity import (
 )
 from app.models.profile import Profile
 from app.models.recommendation import Recommendation
+from app.models.registry import (
+    CalibrationRecord,
+    DriftRecord,
+    DriftStatus,
+    ModelStatus,
+    ModelVersionHistory,
+    Outcome,
+    Prediction,
+    RegistryModel,
+    ScoreRegistry,
+    ValidationLevel,
+)
 from app.models.report import Report
 from app.models.scenario import Scenario
 from app.models.score_snapshot import ScoreSnapshot
@@ -32,8 +44,11 @@ from app.models.vault import (
 __all__ = [
     "Asset",
     "AuditLog",
+    "CalibrationRecord",
     "CashFlow",
     "Certification",
+    "DriftRecord",
+    "DriftStatus",
     "Entity",
     "EntityRelationship",
     "EvidenceRecord",
@@ -44,16 +59,23 @@ __all__ = [
     "KnowledgeAsset",
     "LegacyAsset",
     "Liability",
+    "ModelStatus",
+    "ModelVersionHistory",
     "OmniSightSignal",
     "Opportunity",
     "OpportunityStatus",
     "OpportunityType",
+    "Outcome",
+    "Prediction",
     "Profile",
     "Recommendation",
+    "RegistryModel",
     "Report",
     "Scenario",
+    "ScoreRegistry",
     "ScoreSnapshot",
     "Skill",
     "StateVector",
     "User",
+    "ValidationLevel",
 ]

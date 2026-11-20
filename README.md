@@ -481,6 +481,144 @@ accepted opportunities not duplicating, validation and ownership
 Run the full suite with `python -m pytest -q` (161 tests: the 140
 from Sprints 1–3 plus 21 new opportunity tests).
 
+## Engine v1 — Sprint 5
+
+The Validation Engine — the science layer. THE MISSION IS NOT TO
+VALIDATE MODELS YET. The mission is to build the machinery that
+allows validation to occur. Without Sprint 5, Opportunity
+detection is just an algorithm; with Sprint 5, Opportunity
+detection becomes a hypothesis that can be tested. Nothing in
+this sprint validates a model; it records the evidence
+validation will read.
+
+### The six registries (`app/models/registry.py`, migration `alembic/versions/0007_validation_registry.py`)
+
+| Registry | Table | What it stores |
+|---|---|---|
+| Model Registry | `registry_models` | Every model: `model_id`, `name` (unique), `version`, `description`, `validation_level`, `status`, `owner` |
+| Score Registry | `registry_scores` | The runtime registry and the single source of truth for a score's current formula, version, and status: `score_name` (the key), `current_formula` (the formula as a text record, NOT an implementation), `current_status`, `validation_level`, `active_version` |
+| Prediction Registry | `registry_predictions` | Hypotheses: `prediction_id`, `entity_id`, `model_id`, `prediction_date`, `forecast_horizon` (a duration string — `"30d"`, `"90d"`, `"1y"`), `predicted_outcome` (JSON), `confidence` (0–1) |
+| Outcome Registry | `registry_outcomes` | Actual results: `outcome_id`, `prediction_id`, `actual_result` (JSON, same shape as the prediction), `recorded_date`, `notes` |
+| Calibration Registry | `registry_calibration` | `record_id`, `model_id`, `observed_value`, `predicted_value`, `error`, plus nullable `prediction_id` / `outcome_id` links when generated from a pair |
+| Drift Registry | `registry_drift` | Foundational drift only: `model_id`, `metric`, `baseline`, `current`, `change`, `status` |
+
+Validation levels (Framework v1.0, section 4.1): Conceptual,
+Prototype, Experimental, Validated, Institutional. A measurement
+moves up the hierarchy only by evidence, never by assertion.
+Model status: active, deprecated, retired.
+
+### The seed
+
+Migration 0007 seeds the nine named models of Engineering Order
+005 into the Model Registry and the matching nine entries into
+the Score Registry — GP$ Index, Prosperity Score, Trust Score,
+Opportunity Score, Hidden Asset Multiplier, Stinnes Score, Asset
+Flipper Score, Anti-Fragility Index, Regulatory Friction Score —
+all at validation level Experimental, all active. That is the
+honest current state per the Framework's Appendix A: "No Freedom
+GP$ score has yet reached Level 3 (Validated) or Level 4
+(Institutional), because no real-world validation data exists for
+them." Five of the nine (Hidden Asset Multiplier, Stinnes Score,
+Asset Flipper Score, Anti-Fragility Index, Regulatory Friction
+Score) are listed in Appendix A at Level 2 Experimental; the
+other four are composite Canon scores not listed there and take
+the same honest Experimental default. Where an Engine v1
+reference implementation exists, the Score Registry entry quotes
+its formula (Stinnes, Asset Flipper, Anti-Fragility, Regulatory
+Friction, Hidden Asset Multiplier); where none exists yet (Trust
+Score, Opportunity Score), the entry says so plainly — the Score
+Registry is now the source of truth, and the formula record is
+completed here first, not invented elsewhere. The in-code source
+of the seed list is `SEED_MODELS` in
+`app/services/registry_service.py`; `seed_registry()` is
+idempotent and is what tests exercise.
+
+### Calibration
+
+Calibration Error: **CE = Observed − Predicted** (Framework
+v1.0, section 5.3). `error` is computed server-side on create,
+never client-supplied — the create schema has no `error` field,
+so a client-supplied value is ignored and the server's value is
+what is stored. `POST /api/v1/registry/calibration/from-prediction`
+generates a record from a prediction + outcome pair: the outcome
+must belong to the prediction (else 422), the model comes from
+the prediction, and the numeric values are read from the JSON —
+a top-level number, or an object with a numeric `"value"` key.
+Anything else is a 422; the machinery refuses to guess what the
+number is.
+
+### Drift (foundational only)
+
+No advanced drift analytics in Sprint 5. `change` is computed
+server-side (`current − baseline`) and `status` is derived from
+the relative change |current − baseline| / |baseline|: normal at
+<= 5%, warning at > 5% and <= 20%, critical above 20%. A zero
+baseline has no relative change to measure: any nonzero current
+is critical, a zero current is normal.
+
+### Version tracking and the one-outcome rule
+
+When a model's version is updated, the previous version is
+preserved as a `ModelVersionHistory` row (version, description,
+validation level) before the model row changes, retrievable at
+`GET /api/v1/registry/models/{model_id}/versions` (AT-506). A
+PATCH that does not change the version adds no history row.
+
+One outcome per prediction: a second outcome for the same
+prediction is rejected with 409 Conflict, never silently
+overwritten — the first recorded result is the evidence, and
+replacing it would rewrite history. Deleting a model cascades
+to its version history, predictions, calibration records, and
+drift records (they are evidence about that model); deleting a
+prediction cascades to its outcomes.
+
+### Audit + lineage
+
+Every registry create/update/delete writes an AuditLog entry
+(AT-505): `model_registered`, `model_updated`,
+`model_version_changed`, `model_deleted`, `score_registered`,
+`score_updated`, `score_deleted`, `prediction_created`,
+`prediction_updated`, `prediction_deleted`,
+`outcome_recorded`, `outcome_updated`, `outcome_deleted`,
+`calibration_recorded`, `calibration_deleted`,
+`drift_recorded`, `drift_deleted`. Predictions and outcomes are
+entity-scoped — reads follow the Sprint 1 rule (own entities
+plus shared ones) and writes require owning the entity. Models,
+scores, calibration, and drift are global registry records any
+authenticated user may read.
+
+### API (`app/api/registry.py`, schemas in `app/schemas/registry.py`)
+
+All endpoints require auth, under `/api/v1/registry`: models
+(POST, GET, GET `/{model_id}`, GET `/{model_id}/versions`,
+PATCH, DELETE), scores (POST, GET, GET `/{score_name}`, PATCH,
+DELETE — `score_name` is the key and cannot be renamed),
+predictions (POST, GET, GET `/{prediction_id}`, PATCH, DELETE),
+outcomes (POST, GET, GET `/{outcome_id}`, PATCH, DELETE),
+calibration (POST, POST `/from-prediction`, GET, GET
+`/{record_id}`, DELETE — no PATCH: calibration records are
+immutable evidence), drift (POST, GET, GET `/{record_id}`,
+DELETE — no PATCH, same reason).
+
+### Tests
+
+`tests/test_registry.py` — 27 tests: the eight formal
+acceptance tests (AT-501 Model Registration, AT-502 Prediction
+Lifecycle, AT-503 Calibration Record, AT-504 Validation Level
+Update, AT-505 Registry Lineage, AT-506 Model Version Tracking,
+AT-507 Drift Record Creation, AT-508 OpenAPI Validation) plus
+the seed (nine models + nine scores, idempotent), the Score
+Registry as source of truth (formula / version / status CRUD,
+duplicate 409), the one-outcome-per-prediction rule (409, first
+outcome preserved), server-side computation (calibration error
+ignoring a client-supplied value, drift thresholds including the
+zero-baseline edge), from-prediction with object `"value"`
+outcomes, mismatched-outcome and non-numeric 422s, validation
+(422 / 404), ownership (403), and auth (401).
+
+Run the full suite with `python -m pytest -q` (188 tests: the
+161 from Sprints 1–4 plus 27 new registry tests).
+
 ## Endpoints
 
 ### Meta
@@ -631,6 +769,41 @@ from Sprints 1–3 plus 21 new opportunity tests).
 | DELETE | `/api/v1/opportunities/{opportunity_id}` | Delete an opportunity |
 | GET | `/api/v1/entities/{entity_id}/opportunities` | One entity's opportunities |
 
+### Validation Registry (Engine v1 Sprint 5, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/registry/models` | Register a model (audited) |
+| GET | `/api/v1/registry/models` | List; filter with `?validation_level=`, `?status=` |
+| GET | `/api/v1/registry/models/{model_id}` | One registered model |
+| GET | `/api/v1/registry/models/{model_id}/versions` | Preserved previous versions, newest first |
+| PATCH | `/api/v1/registry/models/{model_id}` | Update; a version change preserves the previous version |
+| DELETE | `/api/v1/registry/models/{model_id}` | Delete a model (version history, predictions, calibration, drift cascade) |
+| POST | `/api/v1/registry/scores` | Register a score (audited) |
+| GET | `/api/v1/registry/scores` | List; filter with `?validation_level=` |
+| GET | `/api/v1/registry/scores/{score_name}` | One score — the source of truth for its formula, version, status |
+| PATCH | `/api/v1/registry/scores/{score_name}` | Update a score (score_name cannot be renamed) |
+| DELETE | `/api/v1/registry/scores/{score_name}` | Delete a score |
+| POST | `/api/v1/registry/predictions` | Store a hypothesis (entity must be owned; audited) |
+| GET | `/api/v1/registry/predictions` | List; filter with `?entity_id=`, `?model_id=` |
+| GET | `/api/v1/registry/predictions/{prediction_id}` | One prediction |
+| PATCH | `/api/v1/registry/predictions/{prediction_id}` | Update a prediction |
+| DELETE | `/api/v1/registry/predictions/{prediction_id}` | Delete a prediction (outcomes cascade) |
+| POST | `/api/v1/registry/outcomes` | Record an outcome — one per prediction (second is 409); audited |
+| GET | `/api/v1/registry/outcomes` | List; filter with `?prediction_id=` |
+| GET | `/api/v1/registry/outcomes/{outcome_id}` | One outcome |
+| PATCH | `/api/v1/registry/outcomes/{outcome_id}` | Update an outcome |
+| DELETE | `/api/v1/registry/outcomes/{outcome_id}` | Delete an outcome |
+| POST | `/api/v1/registry/calibration` | Record a calibration measurement (CE computed server-side; audited) |
+| POST | `/api/v1/registry/calibration/from-prediction` | Generate a calibration record from a prediction + outcome pair |
+| GET | `/api/v1/registry/calibration` | List; filter with `?model_id=` |
+| GET | `/api/v1/registry/calibration/{record_id}` | One calibration record |
+| DELETE | `/api/v1/registry/calibration/{record_id}` | Delete a calibration record |
+| POST | `/api/v1/registry/drift` | Record drift (change + status computed server-side; audited) |
+| GET | `/api/v1/registry/drift` | List; filter with `?model_id=`, `?status=` |
+| GET | `/api/v1/registry/drift/{record_id}` | One drift record |
+| DELETE | `/api/v1/registry/drift/{record_id}` | Delete a drift record |
+
 ## Scoring engines
 
 All engines live in `app/engines/` as pure functions (numbers in, score
@@ -690,7 +863,8 @@ User, Profile, Asset, Liability, CashFlow, HiddenAsset, ScoreSnapshot,
 Scenario, Report, OmniSightSignal, Recommendation, StateVector, Entity,
 EntityRelationship, KnowledgeAsset, EvidenceRecord, Skill,
 Certification, FamilyRecord, LegacyAsset, AuditLog, GraphNode,
-GraphEdge, Opportunity. See
+GraphEdge, Opportunity, RegistryModel, ModelVersionHistory,
+ScoreRegistry, Prediction, Outcome, CalibrationRecord, DriftRecord. See
 `alembic/versions/0001_initial.py` for the v1 schema,
 `alembic/versions/0002_state_vector.py` for the state vector table,
 `alembic/versions/0003_entities.py` for the Sprint 1 entity tables
@@ -700,7 +874,9 @@ tables and the audit log, and
 `alembic/versions/0005_graph.py` for the Sprint 3 graph tables (plus
 `knowledge_asset_id` on `certifications`), and
 `alembic/versions/0006_opportunities.py` for the Sprint 4
-opportunities table.
+opportunities table, and
+`alembic/versions/0007_validation_registry.py` for the Sprint 5
+validation registry tables (plus the nine-model seed).
 
 ## State Vector Ω(t)
 
