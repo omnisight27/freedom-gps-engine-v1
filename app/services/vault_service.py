@@ -268,3 +268,149 @@ async def query_legacy_no_preservation_status(
         stmt = stmt.where(LegacyAsset.entity_id == entity_id)
     stmt = stmt.order_by(LegacyAsset.created_at, LegacyAsset.id)
     return list((await db.execute(stmt)).scalars().all())
+
+
+# --- Sprint 6 list helpers ---
+# The Sovereign Dashboard and the OmniSight Assistant read the
+# Vault through the service layer (Engineering Order 006: no
+# direct database access from the dashboard or assistant layers).
+# These helpers are the entity-scoped reads the dashboard needs;
+# they enforce the Sprint 1 read rule and nothing else.
+
+
+async def list_knowledge_assets(
+    db: AsyncSession,
+    user: User,
+    entity_id: int,
+    *,
+    q: str | None = None,
+    category: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[KnowledgeAsset]:
+    """An entity's knowledge assets, searchable (?q= matches
+    title or description) and filterable (?category=)."""
+    await resolve_entity_for_read(db, entity_id, user)
+    stmt = select(KnowledgeAsset).where(
+        KnowledgeAsset.entity_id == entity_id
+    )
+    if category is not None:
+        stmt = stmt.where(KnowledgeAsset.category == category)
+    if q is not None and q.strip():
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                KnowledgeAsset.title.ilike(like),
+                KnowledgeAsset.description.ilike(like),
+            )
+        )
+    stmt = (
+        stmt.order_by(KnowledgeAsset.created_at, KnowledgeAsset.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def list_skills_for_entity(
+    db: AsyncSession, user: User, entity_id: int, limit: int = 50
+) -> list[Skill]:
+    """An entity's skills."""
+    await resolve_entity_for_read(db, entity_id, user)
+    result = await db.execute(
+        select(Skill)
+        .where(Skill.entity_id == entity_id)
+        .order_by(Skill.created_at, Skill.id)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def list_certifications_for_entity(
+    db: AsyncSession, user: User, entity_id: int, limit: int = 50
+) -> list[Certification]:
+    """An entity's certifications."""
+    await resolve_entity_for_read(db, entity_id, user)
+    result = await db.execute(
+        select(Certification)
+        .where(Certification.entity_id == entity_id)
+        .order_by(Certification.created_at, Certification.id)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def list_family_records_for_entity(
+    db: AsyncSession, user: User, entity_id: int, limit: int = 50
+) -> list[FamilyRecord]:
+    """An entity's family records."""
+    await resolve_entity_for_read(db, entity_id, user)
+    result = await db.execute(
+        select(FamilyRecord)
+        .where(FamilyRecord.entity_id == entity_id)
+        .order_by(FamilyRecord.created_at, FamilyRecord.id)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def list_legacy_assets_for_entity(
+    db: AsyncSession, user: User, entity_id: int, limit: int = 50
+) -> list[LegacyAsset]:
+    """An entity's legacy assets."""
+    await resolve_entity_for_read(db, entity_id, user)
+    result = await db.execute(
+        select(LegacyAsset)
+        .where(LegacyAsset.entity_id == entity_id)
+        .order_by(LegacyAsset.created_at, LegacyAsset.id)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def list_evidence_for_asset(
+    db: AsyncSession, user: User, asset_id: int, limit: int = 50
+) -> list[EvidenceRecord]:
+    """Every EvidenceRecord attached to one KnowledgeAsset."""
+    asset = await get_record_or_404(db, KnowledgeAsset, asset_id)
+    await assert_record_access(db, asset, user)
+    result = await db.execute(
+        select(EvidenceRecord)
+        .where(EvidenceRecord.knowledge_asset_id == asset.id)
+        .order_by(EvidenceRecord.created_at, EvidenceRecord.id)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def list_evidence_for_entity(
+    db: AsyncSession, user: User, entity_id: int, limit: int = 50
+) -> list[EvidenceRecord]:
+    """Every EvidenceRecord attached to any KnowledgeAsset of
+    one entity."""
+    await resolve_entity_for_read(db, entity_id, user)
+    result = await db.execute(
+        select(EvidenceRecord)
+        .join(
+            KnowledgeAsset,
+            EvidenceRecord.knowledge_asset_id == KnowledgeAsset.id,
+        )
+        .where(KnowledgeAsset.entity_id == entity_id)
+        .order_by(EvidenceRecord.created_at, EvidenceRecord.id)
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
+async def list_audit_log_for_entity(
+    db: AsyncSession, user: User, entity_id: int, limit: int = 50
+) -> list[AuditLog]:
+    """An entity's audit history, newest first (AT-608)."""
+    await resolve_entity_for_read(db, entity_id, user)
+    result = await db.execute(
+        select(AuditLog)
+        .where(AuditLog.entity_id == entity_id)
+        .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())

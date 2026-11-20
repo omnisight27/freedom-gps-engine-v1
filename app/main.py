@@ -13,6 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import (
     assets,
+    assistant,
+    dashboard,
     entities,
     graph,
     liabilities,
@@ -62,6 +64,9 @@ app.include_router(graph.router)
 app.include_router(opportunities.router)
 app.include_router(opportunities.entity_router)
 app.include_router(registry.router)
+app.include_router(dashboard.router)
+app.include_router(dashboard.page_router)
+app.include_router(assistant.router)
 
 
 @app.get("/", tags=["meta"])

@@ -2,6 +2,8 @@
 
 from app.api import (
     assets,
+    assistant,
+    dashboard,
     entities,
     graph,
     liabilities,
@@ -18,6 +20,8 @@ from app.api import (
 
 __all__ = [
     "assets",
+    "assistant",
+    "dashboard",
     "entities",
     "graph",
     "liabilities",

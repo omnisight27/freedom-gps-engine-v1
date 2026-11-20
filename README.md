@@ -619,6 +619,151 @@ outcomes, mismatched-outcome and non-numeric 422s, validation
 Run the full suite with `python -m pytest -q` (188 tests: the
 161 from Sprints 1–4 plus 27 new registry tests).
 
+## Engine v1 — Sprint 6
+
+Sovereign Dashboard + OmniSight Assistant (Engineering Order
+006). This is the MVP-completion sprint: the first time Freedom
+GP$ becomes visible to a user. Up to now the system built
+Identity, State Vector, Memory, Relationships, Discovery,
+Validation — those six capabilities are the engine. Sprint 6 is
+the cockpit.
+
+Architecture (enforced): User → Sovereign Dashboard → OmniSight
+Assistant → Engine Services → Knowledge Graph → Validation
+Layer. NO direct database access from the dashboard or
+assistant layers — every interaction flows through the
+existing services (State Vector, Knowledge Vault, Opportunity,
+Registry, Graph). Where a needed read did not exist in a
+service, a service method was added (`vault_service` list
+helpers: knowledge assets with search/filter, skills,
+certifications, family records, legacy assets, evidence for an
+entity/asset, audit log for an entity). No new tables, no
+migration.
+
+### The Sovereign Dashboard
+
+Six modules, assembled by `app/services/dashboard_service.py`
+from the existing services — no new scoring, no new models:
+
+1. **Executive Overview** (`GET /api/v1/dashboard`): entity,
+   latest state vector, open opportunity count, knowledge asset
+   count, legacy asset count, validation status (models by
+   validation level). One-screen summary.
+2. **Complete Ledger** (`GET /api/v1/dashboard/ledger`): the
+   five capitals Financial, Human, Social, Resource, Legacy,
+   read from Ω(t), each with a trend indicator computed from
+   state vector history (latest vs previous snapshot: up / down
+   / flat). Trend indicators only — no new scoring. A component
+   unmeasured in either snapshot reports flat with no delta.
+3. **State Vector Explorer**
+   (`GET /api/v1/dashboard/state-vector`): Ω(t) current value
+   (all ten components), latest changes (components that moved
+   since the previous snapshot, with deltas), and history.
+4. **Opportunity Center**
+   (`GET /api/v1/dashboard/opportunities`): open (detected +
+   accepted), dismissed, resolved (realized) opportunities,
+   each with source (detector + source record), confidence,
+   evidence, and reason (description). Everything is
+   explainable.
+5. **Knowledge Vault** (`GET /api/v1/dashboard/vault`):
+   knowledge assets, skills, certifications, family records,
+   legacy assets, evidence. Searchable (`?q=` matches title or
+   description) and filterable (`?category=` for knowledge
+   assets). Auditable — assets carry their lineage.
+6. **Validation Center** (`GET /api/v1/dashboard/validation`):
+   models, validation levels, predictions, outcomes,
+   calibration errors, drift records — all from the Sprint 5
+   registries. This is the differentiator: most apps hide
+   uncertainty; Freedom GP$ exposes it.
+
+Plus `GET /api/v1/dashboard/audit` (an entity's audit history,
+newest first). All dashboard endpoints require auth and are
+entity-scoped (the Sprint 1 read rule: own entities plus shared
+ones).
+
+The dashboard page (`GET /dashboard`, HTML) is the literal
+"first window into the engine": one page, six sections,
+rendered from the SAME dashboard service as the JSON endpoints
+(`app/api/dashboard_page.py` — a plain template string with
+`html.escape` on every user-controlled string; Jinja2 is not a
+project dependency and the brief allows this approach). No JS
+framework, no external assets. With no `entity_id`, the page
+shows the caller's first accessible entity.
+
+### The OmniSight Assistant
+
+`POST /api/v1/assistant/ask` — body `{question, entity_id,
+opportunity_id?, record_id?, record_type?}`. The assistant is
+DETERMINISTIC and EXPLAINABLE: rule-based intent matching
+(`app/services/assistant_service.py`, `match_intent` — normalized
+lowercase, punctuation stripped, most specific patterns first)
+to one of eight supported intents. NO LLM, NO AI reasoning,
+NOTHING PREDICTIVE. Each intent maps to a specific service
+query; the response is `{intent, answer, data, evidence,
+sources}` — `sources` names the services that produced the
+answer, so every response is traceable. An unknown question is
+never guessed at: it returns a structured `unsupported`
+response that says plainly it cannot answer that yet and lists
+the eight supported questions.
+
+The eight supported questions:
+
+| # | Question | Intent | Service query |
+|---|---|---|---|
+| 1 | Show my opportunities. | `show_opportunities` | Opportunity service: the entity's open opportunities |
+| 2 | What changed in my ledger? | `ledger_changes` | State vector history: which components moved and by how much (one snapshot → says so plainly) |
+| 3 | What legacy assets lack preservation? | `legacy_no_preservation` | Vault query: legacy assets with no preservation status (Detector 5 data) |
+| 4 | Show skills without evidence. | `skills_no_evidence` | Vault query: skills with no evidence (Detector 1 data) |
+| 5 | Show certifications without evidence. | `certifications_no_evidence` | Vault query: certifications with no evidence. NOTE: distinct from Sprint 4 Detector 3, which is certifications WITH evidence but no utilization |
+| 6 | What models are experimental? | `experimental_models` | Model Registry: validation_level Experimental |
+| 7 | Why was this opportunity created? | `opportunity_reason` | With `opportunity_id`: that opportunity's detector, source record, confidence, reason. Without: the six detectors explained + recent opportunities to choose from |
+| 8 | What evidence supports this record? | `record_evidence` | With `record_id` + `record_type` (KnowledgeAsset, Skill, Certification): the evidence linked to that record. Without: what evidence is + recent knowledge assets to choose from |
+
+### Tests
+
+`tests/test_dashboard.py` (20 tests) and
+`tests/test_assistant.py` (15 tests): the eight formal
+acceptance tests (AT-601 Dashboard Loads, AT-602 State Vector
+Display, AT-603 Opportunity Feed, AT-604 Knowledge Vault View,
+AT-605 Validation Center, AT-606 OmniSight Question, AT-607
+Evidence Traceability, AT-608 Audit Visibility) plus ledger
+trends (up / flat / unmeasured), opportunity grouping and
+evidence enrichment, vault search/filter, the HTML page (all
+six sections, no-entity-id default, 401), ownership (403),
+unknown entity (404), all eight assistant intents (including
+the single-snapshot ledger case, the opportunity-reason and
+record-evidence flows with and without ids, the skill with no
+linked asset), the unknown-question behavior (unsupported +
+eight supported questions), intent matching (case/punctuation,
+plurals, unknown), and the OpenAPI contract.
+
+Run the full suite with `python -m pytest -q` (223 tests: the
+188 from Sprints 1–5 plus 35 new dashboard + assistant tests).
+
+## Freedom GP$ Engine v1 MVP — COMPLETE
+
+Sprint 6 closes the Engine v1 MVP. The complete system:
+
+| Sprint | Capability | Tag | Tests |
+|---|---|---|---|
+| 1 | Identity + State Vector Ω(t) | — | 77 |
+| 2 | Memory + Knowledge Vault | `v0.1-foundation` | 114 |
+| 3 | Knowledge Graph | `v0.2-graph` | 140 |
+| 4 | Opportunity Engine (Discovery) | `v0.3-opportunity` | 161 |
+| 5 | Validation Engine | `v0.4-validation` | 188 |
+| 6 | Sovereign Dashboard + OmniSight Assistant (Experience) | `v0.5-mvp` | 223 |
+
+Identity ✅, State Vector ✅, Memory ✅, Relationships ✅,
+Discovery ✅, Validation ✅, Experience ✅. Freedom GP$ is now
+self-measuring, self-auditing, evidence-generating — and, for
+the first time, visible to a user.
+
+What comes immediately after is NOT more features, NOT Engine
+v2, NOT new scores. The next phase is Real Users, Real Data,
+Real Predictions, Real Outcomes, Real Validation — because the
+first validated Freedom GP$ metric is worth more than a hundred
+unvalidated features.
+
 ## Endpoints
 
 ### Meta
@@ -803,6 +948,25 @@ Run the full suite with `python -m pytest -q` (188 tests: the
 | GET | `/api/v1/registry/drift` | List; filter with `?model_id=`, `?status=` |
 | GET | `/api/v1/registry/drift/{record_id}` | One drift record |
 | DELETE | `/api/v1/registry/drift/{record_id}` | Delete a drift record |
+
+### Sovereign Dashboard (Engine v1 Sprint 6, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/dashboard` | Executive Overview — entity, latest state vector, counts, validation status |
+| GET | `/api/v1/dashboard/ledger` | Complete Ledger — the five capitals with trend indicators |
+| GET | `/api/v1/dashboard/state-vector` | State Vector Explorer — Ω(t) current value, latest changes, history |
+| GET | `/api/v1/dashboard/opportunities` | Opportunity Center — open / dismissed / resolved, each with source, confidence, evidence, reason |
+| GET | `/api/v1/dashboard/vault` | Knowledge Vault — searchable (`?q=`), filterable (`?category=`) |
+| GET | `/api/v1/dashboard/validation` | Validation Center — models, predictions, outcomes, calibration errors, drift records |
+| GET | `/api/v1/dashboard/audit` | Audit history for the entity, newest first |
+| GET | `/dashboard` | The dashboard page (HTML) — one page, six sections |
+
+### OmniSight Assistant (Engine v1 Sprint 6, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/assistant/ask` | Ask OmniSight one of the eight supported questions (deterministic, explainable; unknown questions return `unsupported`) |
 
 ## Scoring engines
 
