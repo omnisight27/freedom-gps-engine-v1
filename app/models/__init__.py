@@ -7,6 +7,11 @@ from app.models.graph import GraphEdge, GraphNode
 from app.models.hidden_asset import HiddenAsset
 from app.models.liability import Liability
 from app.models.omnisight_signal import OmniSightSignal
+from app.models.opportunity import (
+    Opportunity,
+    OpportunityStatus,
+    OpportunityType,
+)
 from app.models.profile import Profile
 from app.models.recommendation import Recommendation
 from app.models.report import Report
@@ -40,6 +45,9 @@ __all__ = [
     "LegacyAsset",
     "Liability",
     "OmniSightSignal",
+    "Opportunity",
+    "OpportunityStatus",
+    "OpportunityType",
     "Profile",
     "Recommendation",
     "Report",

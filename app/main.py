@@ -17,6 +17,7 @@ from app.api import (
     graph,
     liabilities,
     omnisight,
+    opportunities,
     reports,
     scenarios,
     scores,
@@ -57,6 +58,8 @@ app.include_router(state_vector.router)
 app.include_router(entities.router)
 app.include_router(vault.router)
 app.include_router(graph.router)
+app.include_router(opportunities.router)
+app.include_router(opportunities.entity_router)
 
 
 @app.get("/", tags=["meta"])

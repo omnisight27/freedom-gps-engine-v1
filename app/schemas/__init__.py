@@ -29,6 +29,13 @@ from app.schemas.graph import (
     GraphSyncOut,
     GraphTraverseOut,
 )
+from app.schemas.opportunity import (
+    DetectRequest,
+    DetectResponse,
+    OpportunityCreate,
+    OpportunityOut,
+    OpportunityUpdate,
+)
 from app.schemas.score import (
     AntiFragilityRequest,
     AntiFragilityResponse,
@@ -90,6 +97,8 @@ __all__ = [
     "CertificationUpdate",
     "CreditHealthRequest",
     "CreditHealthResponse",
+    "DetectRequest",
+    "DetectResponse",
     "EntityCreate",
     "EntityDetailOut",
     "EntityOut",
@@ -124,6 +133,9 @@ __all__ = [
     "LiabilityOut",
     "LoginRequest",
     "NeighborOut",
+    "OpportunityCreate",
+    "OpportunityOut",
+    "OpportunityUpdate",
     "RegulatoryFrictionRequest",
     "RegulatoryFrictionResponse",
     "RelationshipCreate",

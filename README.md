@@ -375,6 +375,112 @@ sync backfill with idempotency.
 Run the full suite with `python -m pytest -q` (140 tests: the 114
 from Sprints 1–2 plus 26 new graph tests).
 
+## Engine v1 — Sprint 4
+
+The Opportunity Engine — the first discovery capability. Mission:
+What is missing? What should be connected? What creates value
+next? The system now has Identity, State Vector, Memory, and
+Relationships; the next logical capability is Discovery, and this
+is where Freedom GP$ first starts producing value that users can
+actually see.
+
+### Model (`app/models/opportunity.py`, migration `alembic/versions/0006_opportunities.py`)
+
+One row per discovered gap. `Opportunity` carries `entity_id`,
+`title`, `description`, `opportunity_type` (Skill Opportunity,
+Asset Opportunity, Knowledge Opportunity, Relationship
+Opportunity, Legacy Opportunity), `confidence` (the detector's
+certainty in the finding, 0–1 — not a value estimate), `status`
+(detected, accepted, dismissed, realized), and its lineage:
+`detector` (which detector found it, or "manual"), `source_type`
+and `source_id` (the record the opportunity refers to — a Skill,
+KnowledgeAsset, LegacyAsset, Certification, or "GraphCluster" for
+a disconnected cluster, which has no single source record and
+carries `source_id` None), and an optional `evidence_id` link.
+Creation and status changes write AuditLog entries.
+
+### The six detectors (`app/services/opportunity_service.py`)
+
+All six read the graph — they use GraphService and the
+IGraphRepository primitives, never raw table filters where a graph
+query expresses the finding. D1 and D5 reuse the Sprint 3 graph
+inventory queries.
+
+| Detector | Finding | Type | Confidence |
+|---|---|---|---|
+| D1 `skills_no_evidence` | Skill with no outgoing HAS_EVIDENCE edge | Skill Opportunity | 0.9 |
+| D2 `skills_evidence_no_utilization` | Skill with evidence but no edges beyond ownership and evidence | Skill Opportunity | 0.7 |
+| D3 `certifications_evidence_no_utilization` | Certification with evidence but no edges beyond ownership and evidence | Knowledge Opportunity | 0.7 |
+| D4 `knowledge_assets_no_relationships` | KnowledgeAsset whose only graph edge is the OWNS edge from its entity (zero edges counts too) | Knowledge Opportunity — Asset Opportunity when the asset's category is "Legacy Asset" | 0.85 |
+| D5 `legacy_no_preservation_status` | LegacyAsset with no preservation_status set | Legacy Opportunity | 0.9 |
+| D6 `disconnected_clusters` | A connected component with no entity node — nodes connected to each other but not to the ledger (BFS over the graph layer) | Relationship Opportunity | 0.8 |
+
+Detector confidences are illustrative — the detector's certainty
+in the finding, not a value estimate.
+
+> **The honest limit on D2 and D3:** the system has no
+> utilization data — Sprint 2 deliberately has no `utilized`
+> field on Skill or Certification, and there is no revenue
+> linkage — so "no utilization" is operationalized as "verified
+> capability that is not connected to any opportunity, asset, or
+> other value-producing relationship". True utilization tracking
+> (revenue linkage) is a later concern, not Sprint 4.
+
+> **A D4 caveat:** an asset that serves as a Skill /
+> Certification's KnowledgeAsset representation has no graph edge
+> to its holder (Sprint 3 does not record that link as an edge),
+> so it can still be flagged here. The representation link is a
+> source-table link, not a graph relationship.
+
+### Detection run + idempotency
+
+`POST /api/v1/opportunities/detect` runs all six detectors for
+one entity. It is idempotent: a finding does not duplicate an
+open (detected or accepted) opportunity for the same detector +
+source record — D6 is keyed by its canonical cluster description
+("Disconnected cluster of N nodes (...). Members: ..."). A gap
+that closes dismisses its open opportunity automatically, with a
+note appended to the description and an audit entry
+(`opportunity_auto_dismissed`) — except a cluster opportunity
+whose description the user rewrote, which is left alone (the
+description is the cluster fingerprint and can no longer be
+matched). An accepted opportunity whose gap closes is dismissed
+the same way; it is never auto-marked realized, because the
+system cannot know why the gap closed.
+
+### API (`app/api/opportunities.py`, schemas in `app/schemas/opportunity.py`)
+
+- `POST /api/v1/opportunities` — create by hand (201; detector
+  defaults to "manual"; audited).
+- `GET /api/v1/opportunities` — list; filter with `?entity_id=`,
+  `?status=`, `?opportunity_type=`.
+- `GET /api/v1/opportunities/{id}` — one opportunity, with its
+  lineage (detector, source record, timestamps).
+- `PATCH /api/v1/opportunities/{id}` — update; a status change
+  writes an audit entry.
+- `DELETE /api/v1/opportunities/{id}` — delete (204).
+- `GET /api/v1/entities/{entity_id}/opportunities` — one entity's
+  opportunities.
+- `POST /api/v1/opportunities/detect` — run all six detectors for
+  one entity; returns the opportunities created and the ones
+  auto-dismissed.
+
+### Tests
+
+`tests/test_opportunities.py` — 21 tests: the eight formal
+acceptance tests (AT-401 Hidden Skill Detection, AT-402 Knowledge
+Gap Detection, AT-403 Legacy Preservation Detection, AT-404
+Opportunity CRUD, AT-405 Opportunity Lineage, AT-406 Opportunity
+Confidence, AT-407 Opportunity Audit, AT-408 Graph Gap Query)
+plus D2/D3 (evidence but no utilization), the D4 Legacy Asset
+category mapping, idempotency, auto-dismiss on gap close (with
+the D1 → D2 detector transition), open gaps surviving a rerun,
+accepted opportunities not duplicating, validation and ownership
+(422 / 404 / 403), list filters, and the OpenAPI contract.
+
+Run the full suite with `python -m pytest -q` (161 tests: the 140
+from Sprints 1–3 plus 21 new opportunity tests).
+
 ## Endpoints
 
 ### Meta
@@ -513,6 +619,18 @@ from Sprints 1–2 plus 26 new graph tests).
 | GET | `/api/v1/graph/queries/knowledge-no-evidence` | KnowledgeAssets with no evidence (graph) |
 | GET | `/api/v1/graph/queries/legacy-no-preservation-status` | LegacyAssets with no preservation status (graph) |
 
+### Opportunity Engine (Engine v1 Sprint 4, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/opportunities` | Create an opportunity by hand (detector "manual"; audited) |
+| GET | `/api/v1/opportunities` | List; filter with `?entity_id=`, `?status=`, `?opportunity_type=` |
+| POST | `/api/v1/opportunities/detect` | Run all six detectors for one entity (idempotent; auto-dismisses closed gaps) |
+| GET | `/api/v1/opportunities/{opportunity_id}` | One opportunity, with lineage |
+| PATCH | `/api/v1/opportunities/{opportunity_id}` | Update; a status change writes an audit entry |
+| DELETE | `/api/v1/opportunities/{opportunity_id}` | Delete an opportunity |
+| GET | `/api/v1/entities/{entity_id}/opportunities` | One entity's opportunities |
+
 ## Scoring engines
 
 All engines live in `app/engines/` as pure functions (numbers in, score
@@ -572,7 +690,7 @@ User, Profile, Asset, Liability, CashFlow, HiddenAsset, ScoreSnapshot,
 Scenario, Report, OmniSightSignal, Recommendation, StateVector, Entity,
 EntityRelationship, KnowledgeAsset, EvidenceRecord, Skill,
 Certification, FamilyRecord, LegacyAsset, AuditLog, GraphNode,
-GraphEdge. See
+GraphEdge, Opportunity. See
 `alembic/versions/0001_initial.py` for the v1 schema,
 `alembic/versions/0002_state_vector.py` for the state vector table,
 `alembic/versions/0003_entities.py` for the Sprint 1 entity tables
@@ -580,7 +698,9 @@ GraphEdge. See
 `alembic/versions/0004_vault.py` for the Sprint 2 Knowledge Vault
 tables and the audit log, and
 `alembic/versions/0005_graph.py` for the Sprint 3 graph tables (plus
-`knowledge_asset_id` on `certifications`).
+`knowledge_asset_id` on `certifications`), and
+`alembic/versions/0006_opportunities.py` for the Sprint 4
+opportunities table.
 
 ## State Vector Ω(t)
 

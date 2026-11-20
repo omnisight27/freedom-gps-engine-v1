@@ -87,6 +87,7 @@ class Entity(Base):
     certifications = relationship("Certification", back_populates="entity")
     family_records = relationship("FamilyRecord", back_populates="entity")
     legacy_assets = relationship("LegacyAsset", back_populates="entity")
+    opportunities = relationship("Opportunity", back_populates="entity")
 
 
 class EntityRelationship(Base):
