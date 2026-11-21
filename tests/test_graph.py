@@ -55,6 +55,9 @@ def test_graph_relationship_types():
         "OWNS", "HAS_SKILL", "HAS_CERTIFICATION", "HAS_EVIDENCE",
         "HAS_RECORD", "HAS_LEGACY", "RELATED_TO", "MEMBER_OF",
         "CONTRIBUTES_TO",
+        # Phase C.1 — Entity Resolution: assets link to the org
+        # that funds / issues them.
+        "FUNDED_BY", "ISSUED_BY",
     }
 
 

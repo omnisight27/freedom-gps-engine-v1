@@ -95,6 +95,11 @@ def test_entity_schema_round_trip():
         name=payload.name,
         description=payload.description,
         owner_id=7,
+        # Phase C.1 — Entity Resolution fields (the canonical
+        # name defaults to the name when constructed directly).
+        canonical_name=payload.name,
+        aliases=["Illustrative Fam."],
+        confidence_score=1.0,
         created_at=datetime(2026, 11, 20, tzinfo=timezone.utc),
         updated_at=datetime(2026, 11, 20, tzinfo=timezone.utc),
     )
@@ -102,6 +107,9 @@ def test_entity_schema_round_trip():
     assert out.type == "family"
     assert out.name == "Illustrative Family"
     assert out.owner_id == 7
+    assert out.canonical_name == "Illustrative Family"
+    assert out.aliases == ["Illustrative Fam."]
+    assert out.confidence_score == 1.0
 
 
 def test_entity_schema_rejects_invalid_type():

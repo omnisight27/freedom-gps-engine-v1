@@ -3,6 +3,7 @@
 from app.models.asset import Asset
 from app.models.cash_flow import CashFlow
 from app.models.entity import Entity, EntityRelationship
+from app.models.entity_resolution import EntityResolutionReview
 from app.models.graph import GraphEdge, GraphNode
 from app.models.hidden_asset import HiddenAsset
 from app.models.liability import Liability

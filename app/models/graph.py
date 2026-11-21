@@ -78,6 +78,13 @@ class GraphRelationshipType(str, enum.Enum):
     RELATED_TO = "RELATED_TO"
     MEMBER_OF = "MEMBER_OF"
     CONTRIBUTES_TO = "CONTRIBUTES_TO"
+    # Phase C.1 — Entity Resolution: the org edges the imports
+    # create once funders/agencies are real nodes instead of free
+    # text. A grant asset is FUNDED_BY its funder; a contract
+    # asset is ISSUED_BY its agency. A non-OWNS edge also closes
+    # the D4 "no relationships" gap for that asset.
+    FUNDED_BY = "FUNDED_BY"
+    ISSUED_BY = "ISSUED_BY"
 
 
 class GraphNode(Base):

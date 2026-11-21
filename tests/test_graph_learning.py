@@ -222,13 +222,13 @@ def test_detection_never_closes_import_opportunities():
         )
     )
     result = _detect(client, entity["id"])
-    # D4 fires on both imported assets (each has only its OWNS
-    # edge): the graph itself surfaces that the imported
-    # knowledge is unconnected.
-    assert result["created_count"] == 2
-    assert {
-        c["detector"] for c in result["created"]
-    } == {"knowledge_assets_no_relationships"}
+    # Phase C.1: both imported assets now carry a non-OWNS edge
+    # (the contract's ISSUED_BY, the grant's FUNDED_BY), so D4
+    # no longer fires on them — the graph itself no longer
+    # reports them as unconnected. The guard this test exists
+    # for is unchanged: detection dismisses nothing, least of
+    # all the two import opportunities.
+    assert result["created_count"] == 0
     # Nothing is dismissed — least of all the two import
     # opportunities.
     assert result["dismissed_count"] == 0
@@ -245,7 +245,9 @@ def test_detection_never_closes_import_opportunities():
 
 def test_detection_is_idempotent():
     """A second learning pass creates nothing new and dismisses
-    nothing."""
+    nothing. (Phase C.1: the first pass already creates nothing
+    — the imported grant asset carries a FUNDED_BY edge, so D4
+    does not fire on it.)"""
     client, user_id = _auth_client()
     entity = _make_entity(client, "NicNacs")
     asyncio.run(
@@ -274,16 +276,18 @@ def test_detection_is_idempotent():
         )
     )
     first = _detect(client, entity["id"])
-    assert first["created_count"] == 1
+    assert first["created_count"] == 0
     second = _detect(client, entity["id"])
     assert second["created_count"] == 0
     assert second["dismissed_count"] == 0
 
 
 def test_d4_finds_imported_grant_assets():
-    """D4 over real imported data: every grant asset has only
-    its OWNS edge, so each one is a Knowledge Opportunity the
-    graph itself surfaces."""
+    """D4 over real imported data. Phase C.1: the funded grants
+    carry FUNDED_BY edges, so D4 no longer fires on them — the
+    graph itself no longer reports them as unconnected. D4 still
+    fires on the genuinely unconnected asset: the catalog grant
+    with no funder, which has only its OWNS edge."""
     client, user_id = _auth_client()
     entity = _make_entity(client, "NicNacs")
     asyncio.run(
@@ -322,7 +326,8 @@ def test_d4_finds_imported_grant_assets():
                 "catalog": [
                     {
                         "name": "Grant Three",
-                        "funder": "Funder C",
+                        # No funder: this asset gains no FUNDED_BY
+                        # edge, so it is the only D4 finding.
                         "level": "foundation",
                         "categories": ["startup"],
                         "states": ["national"],
@@ -345,7 +350,8 @@ def test_d4_finds_imported_grant_assets():
         for c in result["created"]
         if c["detector"] == "knowledge_assets_no_relationships"
     ]
-    assert len(d4) == 3
+    assert len(d4) == 1
+    assert d4[0]["title"].endswith("Grant Three")
     assert all(c["source_type"] == "KnowledgeAsset" for c in d4)
     assert all(
         c["opportunity_type"] == "Knowledge Opportunity" for c in d4

@@ -153,7 +153,8 @@ from app.api.vault import (
 from app.api.vault import (
     update_knowledge_asset as update_knowledge_asset_endpoint,
 )
-from app.models.entity import Entity
+from app.models.entity import Entity, EntityType
+from app.models.graph import GraphRelationshipType
 from app.models.opportunity import (
     Opportunity,
     OpportunityStatus,
@@ -163,6 +164,10 @@ from app.models.user import User
 from app.models.vault import KnowledgeAsset, KnowledgeCategory
 from app.schemas.opportunity import OpportunityCreate
 from app.schemas.vault import KnowledgeAssetCreate, KnowledgeAssetUpdate
+from app.services.entity_resolution import (
+    link_asset_to_org,
+    resolve_or_create,
+)
 from app.services.opportunity_service import create_opportunity
 
 FEED_URL = (
@@ -314,6 +319,16 @@ async def import_contract_intel(
         "assets_updated": 0,
         "opportunities_created": 0,
         "stale_assets_not_in_feed": 0,
+        # Phase C.1 — Entity Resolution: how each row's agency
+        # resolved (L1/L2/L3 auto-attached, L4 queued a review,
+        # NEW created a shared org entity).
+        "resolution_l1": 0,
+        "resolution_l2": 0,
+        "resolution_l3": 0,
+        "resolution_l4": 0,
+        "resolution_new": 0,
+        "resolution_queued": 0,
+        "issued_by_edges_created": 0,
     }
     rows = feed.get("rows") or []
     seen_keys: set[str] = set()
@@ -404,6 +419,34 @@ async def import_contract_intel(
             )
             counts["opportunities_created"] += 1
             created_anything = True
+        # Phase C.1 — Entity Resolution: the agency becomes a
+        # real org node (shared, type business) and the asset
+        # gains an ISSUED_BY edge to it. A non-OWNS edge also
+        # closes the D4 "no relationships" gap for this asset.
+        agency = str(row.get("agency") or "").strip()
+        if agency and agency != "?":
+            resolution = await resolve_or_create(
+                db,
+                name=agency,
+                entity_type=EntityType.BUSINESS.value,
+                context={
+                    "state": str(row.get("state") or "").strip(),
+                    "naics": str(row.get("naics") or "").strip(),
+                },
+                owner_id=None,
+                user=user,
+            )
+            counts[f"resolution_{resolution.layer.lower()}"] += 1
+            if resolution.review_id is not None:
+                counts["resolution_queued"] += 1
+            if await link_asset_to_org(
+                db,
+                asset=asset,
+                org=resolution.entity,
+                relationship_type=GraphRelationshipType.ISSUED_BY.value,
+                confidence=resolution.confidence,
+            ):
+                counts["issued_by_edges_created"] += 1
         if not created_anything:
             counts["skipped_duplicate"] += 1
         await db.commit()

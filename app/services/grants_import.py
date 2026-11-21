@@ -59,35 +59,21 @@ of scope for this phase. The import does not decide whether the
 entity will win, or whether it should apply; that judgment is
 the user's, recorded as the opportunity's status.
 
-Identity and entity resolution — what the import does today,
-and what it does not do. The import's only identity mechanism
-is the source key: "grant:{funder-slug}:{name-slug}", where the
-slug lowercases the text and replaces every run of
-non-alphanumeric characters with a single hyphen. Two spellings
-of the same funder that slug differently ("USDA Rural
-Development" vs "U.S. Dept. of Agriculture, Rural
-Development") produce different keys and therefore different
-assets — the match is exact, on the slugged text, nothing
-more. The same is true of the grant name: the key cannot tell
-that two differently-worded names are the same grant. Funders
-and agencies are never nodes: "USDA Rural Development" is the
-funder of 6 grants in this file, but the graph holds six
-separate grant assets whose descriptions mention the funder as
-text — there is no USDA node, no persistent ID for the
-organization, and no edge from any grant to its funder. The
-engine has no normalization or entity-resolution mechanism for
-external organizations (the only normalization in the codebase
-is question-text normalization in the assistant, which is
-unrelated; graph nodes are keyed by (node_type, source_id),
-exact-match only). The gap, stated plainly: until a
-persistent-identity layer exists for organizations, grants,
-awards, contracts, projects, and people, the same organization
-under different formats will fragment into separate text
-mentions, relationship density will stay low, and discovery
-will degrade. Building that layer is a new engine, not this
-phase — EO 007A forbids inventing it here — so this phase
-records identity exactly as the source keys do, and flags the
-gap.
+Identity and entity resolution — Phase C.1. The import's
+source key ("grant:{funder-slug}:{name-slug}") still
+identifies the GRANT asset, but the FUNDER is now resolved
+through the Phase C.1 engine (app/services/entity_resolution.py):
+the funder name is normalized and matched (L1 exact, L2
+normalized, L3 alias, L4 context — queue only), the funder
+becomes a shared org node, and the asset gains a FUNDED_BY
+edge to it. Two spellings of the same funder that slug
+differently still produce different asset keys — the grant
+identity is exact, on the slugged text — but the funder
+identity is now resolved, so the same organization no longer
+fragments into separate text mentions. The remaining gap:
+grant NAME variants (two differently-worded names for the
+same grant) are still distinct assets; only the funder is
+resolved.
 
 Two design gaps, resolved from the code (not guessed):
 
@@ -156,6 +142,7 @@ import json
 import re
 import urllib.request
 from datetime import date
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -166,7 +153,8 @@ from app.api.vault import (
 from app.api.vault import (
     update_knowledge_asset as update_knowledge_asset_endpoint,
 )
-from app.models.entity import Entity
+from app.models.entity import Entity, EntityType
+from app.models.graph import GraphRelationshipType
 from app.models.opportunity import (
     Opportunity,
     OpportunityStatus,
@@ -176,6 +164,10 @@ from app.models.user import User
 from app.models.vault import KnowledgeAsset, KnowledgeCategory
 from app.schemas.opportunity import OpportunityCreate
 from app.schemas.vault import KnowledgeAssetCreate, KnowledgeAssetUpdate
+from app.services.entity_resolution import (
+    link_asset_to_org,
+    resolve_or_create,
+)
 from app.services.opportunity_service import create_opportunity
 
 FEED_URL = (
@@ -453,6 +445,16 @@ async def import_grants(
         "opportunities_accepted": 0,
         "past_deadline": 0,
         "stale_assets_not_in_feed": 0,
+        # Phase C.1 — Entity Resolution: how each entry's
+        # funder resolved (L1/L2/L3 auto-attached, L4 queued a
+        # review, NEW created a shared org entity).
+        "resolution_l1": 0,
+        "resolution_l2": 0,
+        "resolution_l3": 0,
+        "resolution_l4": 0,
+        "resolution_new": 0,
+        "resolution_queued": 0,
+        "funded_by_edges_created": 0,
     }
     seen_keys: set[str] = set()
     # The tiered NicNacs entries are processed first: when the
@@ -552,6 +554,40 @@ async def import_grants(
                     created_anything = True
             if not created_anything:
                 counts["skipped_duplicate"] += 1
+            # Phase C.1 — Entity Resolution: the funder becomes
+            # a real org node (shared, type business) and the
+            # asset gains a FUNDED_BY edge to it. A non-OWNS
+            # edge also closes the D4 "no relationships" gap
+            # for this asset. The hook runs for every entry —
+            # eligible or not, new asset or existing — so a
+            # re-run still links assets the first run missed.
+            if funder and funder != "?":
+                url = str(entry.get("url") or "").strip()
+                host = ""
+                if url and url != "unverified":
+                    try:
+                        host = (urlparse(url).hostname or "").lower()
+                    except ValueError:
+                        host = ""
+                resolution = await resolve_or_create(
+                    db,
+                    name=funder,
+                    entity_type=EntityType.BUSINESS.value,
+                    context={"domain": host} if host else {},
+                    owner_id=None,
+                    user=user,
+                )
+                counts[f"resolution_{resolution.layer.lower()}"] += 1
+                if resolution.review_id is not None:
+                    counts["resolution_queued"] += 1
+                if await link_asset_to_org(
+                    db,
+                    asset=asset,
+                    org=resolution.entity,
+                    relationship_type=GraphRelationshipType.FUNDED_BY.value,
+                    confidence=resolution.confidence,
+                ):
+                    counts["funded_by_edges_created"] += 1
             await db.commit()
 
     # Entries that disappear from the file are not auto-dismissed
