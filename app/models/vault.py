@@ -60,6 +60,15 @@ class KnowledgeCategory(str, enum.Enum):
     It is distinct from "Research" (a finding) and "Historical
     Record" (the aggregate history): the pick itself is the
     hypothesis the Validation Registry tests.
+
+    "Opportunity" was added by the OmniSight connector (EO 007A
+    Phase B): a SAM.gov contract solicitation from the loop's
+    nonprofit watch is an opportunity record — a government
+    contract a nonprofit or business could pursue. It is the
+    KnowledgeAsset representation of the Opportunity Record the
+    import creates alongside it; the asset carries the
+    solicitation's facts, the opportunity carries the decision
+    (pursue or pass).
     """
 
     SKILL = "Skill"
@@ -72,6 +81,7 @@ class KnowledgeCategory(str, enum.Enum):
     FAMILY_RECORD = "Family Record"
     LEGACY_ASSET = "Legacy Asset"
     PREDICTION = "Prediction"
+    OPPORTUNITY = "Opportunity"
 
 
 class EvidenceSourceType(str, enum.Enum):
