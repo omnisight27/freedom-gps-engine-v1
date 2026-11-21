@@ -130,27 +130,6 @@ OPEN_STATUSES = (
     OpportunityStatus.ACCEPTED.value,
 )
 
-# Detectors the Opportunity Engine itself owns. run_detection
-# only auto-dismisses opportunities created by these six — an
-# opportunity created by an importer (a foreign detector value
-# such as "contract_intel_sam_gov") is owned by its importer, and
-# a detection run must never close it: the detectors cannot know
-# whether the imported gap closed, and the import's idempotency
-# contract is "dismissed is the user's decision". Found by
-# Phase C (EO 007A): without this guard, the first learning pass
-# over the populated graph would have auto-dismissed every
-# Phase B contract opportunity.
-KNOWN_DETECTORS = frozenset(
-    {
-        DETECTOR_SKILLS_NO_EVIDENCE,
-        DETECTOR_SKILLS_EVIDENCE_NO_UTILIZATION,
-        DETECTOR_CERTS_EVIDENCE_NO_UTILIZATION,
-        DETECTOR_KNOWLEDGE_NO_RELATIONSHIPS,
-        DETECTOR_LEGACY_NO_PRESERVATION,
-        DETECTOR_DISCONNECTED_CLUSTERS,
-    }
-)
-
 # A cluster opportunity's description starts with this prefix —
 # the description IS the cluster fingerprint (its members), so a
 # user who rewrites the description opts the opportunity out of
@@ -714,11 +693,7 @@ async def run_detection(
     automatically, with a note appended to the description and an
     audit entry — except a cluster opportunity whose description
     the user rewrote, which is left alone (the description is the
-    cluster fingerprint and can no longer be matched). Only
-    opportunities created by the six detectors are ever
-    auto-dismissed: an opportunity created by an importer (a
-    foreign detector value) is owned by its importer, and a
-    detection run must never close it.
+    cluster fingerprint and can no longer be matched).
 
     Returns {"created": [...], "dismissed": [...]}. The caller
     commits."""
@@ -792,12 +767,6 @@ async def run_detection(
     dismissed: list[Opportunity] = []
     today = date.today().isoformat()
     for opp in open_opps:
-        if opp.detector not in KNOWN_DETECTORS:
-            # Not a detector finding — owned by its importer (e.g.
-            # the Phase B contract import). A detection run must
-            # never close it: the detectors cannot know whether
-            # the imported gap closed.
-            continue
         key = _opportunity_key(opp)
         if key in current_keys:
             continue
