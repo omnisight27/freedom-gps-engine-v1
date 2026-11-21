@@ -3,12 +3,11 @@
 Can you borrow?
 
     CHS = (Payment History * 0.35 + Utilization * 0.30 + Age * 0.15
-           + Mix * 0.10 + Inquiry Score * 0.10) * 100
+           + Mix * 0.10 + Inquiry Score * 0.10) * 850
 
 Scale 0-850 (FICO-style). Component inputs are 0-1 fractions; the
-weighted sum is 0-1 and the * 100 factor puts the result on a 0-100
-base, clamped to the 0-850 scale. A perfect profile scores 100 on the
-base scale; the 0-850 range is the reporting scale the score maps onto.
+weighted sum is 0-1 and the * 850 factor puts the result on the 0-850
+scale. A perfect profile scores 850.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ def credit_health_score(
         + mix * 0.10
         + inquiry * 0.10
     )
-    score = weighted * 100
+    score = weighted * 850
     return round(max(0.0, min(MAX_SCORE, score)), 2)
 
 

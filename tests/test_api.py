@@ -105,8 +105,9 @@ def test_scores_credit_health():
         },
     )
     assert r.status_code == 200
-    # (0.95*0.35 + 0.85*0.30 + 0.80*0.15 + 0.70*0.10 + 0.90*0.10) * 100 = 86.75
-    assert r.json()["score"] == 86.75
+    # (0.95*0.35 + 0.85*0.30 + 0.80*0.15 + 0.70*0.10 + 0.90*0.10) * 850 = 737.37
+    assert r.json()["score"] == 737.37
+    assert r.json()["rating"] == "Good"
 
 
 def test_scores_sovereignty():
