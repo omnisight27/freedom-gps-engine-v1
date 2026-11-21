@@ -992,7 +992,7 @@ out) so they are unit-testable in isolation:
   Bands: Dependent 0-0.5, Transitional 0.5-1, Sovereign 1-2, Fully
   Sovereign 2+.
 - **Credit Health Score** — `(payment history * 0.35 + utilization * 0.30
-  + age * 0.15 + mix * 0.10 + inquiry * 0.10) * 100`, scale 0-850.
+  + age * 0.15 + mix * 0.10 + inquiry * 0.10) * 850`, scale 0-850.
 - **Hidden Asset Multiplier** — `(IP + skills + licenses + network +
   brand + education + future royalties) / reported net worth`.
 - **Revaluation Gap** — `potential value / current recognized value`.
