@@ -51,7 +51,16 @@ from app.database import Base
 
 
 class KnowledgeCategory(str, enum.Enum):
-    """The categories a KnowledgeAsset may hold."""
+    """The categories a KnowledgeAsset may hold.
+
+    "Prediction" was added by the OmniSight connector (EO 007A
+    Phase A, Integration Sprint A): a NexIntel pick is a
+    prediction record — a scored market call with an expected
+    return, a confidence, and (once graded) a realized outcome.
+    It is distinct from "Research" (a finding) and "Historical
+    Record" (the aggregate history): the pick itself is the
+    hypothesis the Validation Registry tests.
+    """
 
     SKILL = "Skill"
     CERTIFICATION = "Certification"
@@ -62,6 +71,7 @@ class KnowledgeCategory(str, enum.Enum):
     HISTORICAL_RECORD = "Historical Record"
     FAMILY_RECORD = "Family Record"
     LEGACY_ASSET = "Legacy Asset"
+    PREDICTION = "Prediction"
 
 
 class EvidenceSourceType(str, enum.Enum):
