@@ -23,10 +23,18 @@ from app.engines.master_index import calculate_master_index
 from app.models.state_vector import StateVector
 from app.models.user import User
 from app.schemas.state_vector import (
+    MasterIndexCoefficients,
     MasterIndexRequest,
     MasterIndexResponse,
     StateVectorCreate,
     StateVectorOut,
+)
+from app.services.entity_service import assert_entity_access, get_entity_or_404
+from app.services.state_vector_service import (
+    compute_master_index_for_snapshot,
+    get_entity_state_vector_history,
+    get_latest_entity_state_vector,
+    record_entity_state_vector,
 )
 
 router = APIRouter(prefix="/api/v1/state-vector", tags=["state-vector"])
@@ -69,6 +77,87 @@ async def record_state_vector(
     await db.commit()
     await db.refresh(snapshot)
     return snapshot
+
+
+@router.post(
+    "/entities/{entity_id}",
+    response_model=StateVectorOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_entity_state_vector_endpoint(
+    entity_id: int,
+    payload: StateVectorCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> StateVector:
+    """Record one snapshot of an entity's state vector Ω(t). The
+    caller must own the entity (or the entity must be shared). The
+    snapshot is stored with the caller's user_id and the entity_id."""
+    entity = await get_entity_or_404(db, entity_id)
+    assert_entity_access(entity, current_user)
+    return await record_entity_state_vector(
+        db, user_id=current_user.id, entity=entity, payload=payload
+    )
+
+
+@router.get("/entities/{entity_id}", response_model=list[StateVectorOut])
+async def list_entity_state_vectors(
+    entity_id: int,
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[StateVector]:
+    """An entity's snapshots, latest first."""
+    entity = await get_entity_or_404(db, entity_id)
+    assert_entity_access(entity, current_user)
+    return await get_entity_state_vector_history(db, entity_id, limit=limit)
+
+
+@router.get(
+    "/entities/{entity_id}/latest", response_model=StateVectorOut
+)
+async def latest_entity_state_vector(
+    entity_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> StateVector:
+    """An entity's latest snapshot (404 when none recorded)."""
+    entity = await get_entity_or_404(db, entity_id)
+    assert_entity_access(entity, current_user)
+    snapshot = await get_latest_entity_state_vector(db, entity_id)
+    if snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No state vector snapshot recorded yet for this entity",
+        )
+    return snapshot
+
+
+@router.get(
+    "/entities/{entity_id}/master-index",
+    response_model=MasterIndexResponse,
+)
+async def entity_master_index(
+    entity_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MasterIndexResponse:
+    """GP$ Master Index + Unified Prosperity Equation computed from an
+    entity's latest snapshot. Coefficients are the uncalibrated
+    placeholders, so the response always says `calibrated: false`."""
+    entity = await get_entity_or_404(db, entity_id)
+    assert_entity_access(entity, current_user)
+    snapshot = await get_latest_entity_state_vector(db, entity_id)
+    if snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No state vector snapshot recorded yet for this entity",
+        )
+    return MasterIndexResponse(
+        **compute_master_index_for_snapshot(
+            snapshot, coefficients=MasterIndexCoefficients()
+        )
+    )
 
 
 @router.get("/{user_id}", response_model=list[StateVectorOut])

@@ -64,6 +64,706 @@ plus the public API endpoints (root, health, scores, OmniSight signals,
 Shadow Ledger valuation, scenario stress test). The score endpoints need
 no database and no auth, so the suite runs without a live PostgreSQL.
 
+## Engine v1 — Sprint 1
+
+Branch: **`freedom-gps-engine-v1`** (Engineering Order 001).
+
+Sprint 1 adds the Identity foundation of Engine v1 to this repository:
+
+- **Entity model** (`app/models/entity.py`) — Person, Family, Business,
+  Nonprofit, Community. An entity is the node of the Knowledge Graph
+  and the owner of a state vector; Identity is the root node of all
+  value measurement.
+- **EntityRelationship model** (same file) — owns, member_of, works_with,
+  inherits, contributes_to. Edges carry a confidence score (0–1) and a
+  source so every relationship traces to evidence.
+- **State Vector Service** (`app/services/state_vector_service.py`) —
+  record a snapshot for an entity, get its latest snapshot and history,
+  and compute the GP$ Master Index for a snapshot. All math reuses the
+  existing `app/engines/master_index.py`; nothing here re-implements a
+  formula, and the Master Index coefficients are unchanged (uncalibrated
+  placeholders, `calibrated: false`).
+- **Entities API** (`app/api/entities.py`) — create/list/get/update
+  entities, create/list relationships, list neighbors.
+- **Entity state-vector endpoints** (in `app/api/state_vector.py`) —
+  record a snapshot for an entity, list its history, fetch its latest,
+  and compute its Master Index from the latest snapshot.
+- **Migration** `alembic/versions/0003_entities.py` — creates the
+  `entities` and `entity_relationships` tables and adds an optional
+  `entity_id` to `state_vectors`.
+
+Ownership rule: an entity's owner is its creator; owned entities are
+visible only to their owner, while unowned entities are shared. Writes
+require ownership. A self-relationship is rejected (400); an unknown
+relationship type is rejected (422).
+
+Run the Sprint 1 tests with the rest of the suite: `python -m pytest -q`
+(77 tests: the original 52 plus 25 new entity / state-vector-service
+tests in `tests/test_entities.py`).
+
+## Engine v1 — Sprint 2
+
+Branch: **`freedom-gps-engine-v1`** (Engineering Order 002 — the formal
+Sprint 2 definition).
+
+Sprint 2 adds the Knowledge Vault — the memory of Engine v1. It stores,
+organizes, links, and retrieves knowledge, memory, legacy, and evidence
+records associated with any entity. Every record belongs to an entity,
+supports evidence, and supports lineage. No new scores, no new score
+formulas, no Governance, no AI agents, no Opportunity Engine (deferred
+to Sprint 4), and no Neo4j integration in this sprint.
+
+### Models (`app/models/vault.py`, migration `alembic/versions/0004_vault.py`)
+
+- **KnowledgeAsset** — the unified vault record: entity_id, title,
+  description, category (Skill, Certification, Document, Research,
+  Process, Lesson, Historical Record, Family Record, Legacy Asset),
+  content_type, status (default `active`), confidence (0–1).
+  Lineage: `created_by` (the creating user), `source`, `version`
+  (starts at 1, increments on update), `last_updated` (the asset's
+  `updated_at`, exposed under the lineage name), and a computed
+  `evidence_count`.
+- **EvidenceRecord** — attached to a KnowledgeAsset
+  (`knowledge_asset_id`, not to an entity): source, source_type
+  (Document, Transcript, Certificate, User Assertion, Government
+  Record, Archive Record, Manual Entry), confidence (0–1),
+  collected_at, notes. Multiple evidence records per asset.
+- **Skill** — entity_id, name, proficiency, years_experience,
+  verified (default false). A skill may have many evidence records:
+  it carries an optional `knowledge_asset_id` FK to its
+  KnowledgeAsset representation, so evidence attaches through the
+  asset. There is no `monetized` field and no opportunity link in
+  Sprint 2.
+- **Certification** — entity_id, issuer, title, issue_date,
+  expiration_date, credential_id. No `utilized` field in Sprint 2.
+- **FamilyRecord** — entity_id, title, record_type (Biography,
+  Genealogy, Historical Event, Oral History, Artifact, Letter),
+  description, date_recorded. No `related_entity_id`, `relationship`,
+  or `preservation_plan` field in Sprint 2.
+- **LegacyAsset** — entity_id, title, asset_type (Book, Patent,
+  Research, Archive, Training, Community Project, IP),
+  estimated_impact (abstract units — never dollars),
+  preservation_status. Preservation tracking is required.
+- **AuditLog** (Event / Epic 2.8) — event_type, entity_id (nullable),
+  record_type, record_id, actor (the user), timestamp, details.
+  Creation writes `knowledge_created` (KnowledgeAsset), `skill_added`
+  (Skill), `certification_added` (Certification), and `legacy_created`
+  (LegacyAsset). FamilyRecord creation is also written to the audit
+  log, but with no invented named event type — the entry carries
+  `event_type` NULL and the record_type / record_id carry the record.
+  Updating a LegacyAsset's `preservation_status` writes a
+  `legacy_preservation_updated` entry.
+
+Deleting a KnowledgeAsset deletes its EvidenceRecords (CASCADE);
+Skills linked to it keep their row and lose the link (SET NULL).
+
+### API (`app/api/vault.py`, schemas in `app/schemas/vault.py`)
+
+All endpoints live under `/api/v1` and require auth; writes require
+ownership of the entity, following the Sprint 1 pattern.
+
+- Unified Knowledge APIs (Epic 2.7): `POST /knowledge`,
+  `GET /knowledge/{id}`, `PUT /knowledge/{id}`,
+  `DELETE /knowledge/{id}`, `GET /entities/{id}/knowledge`
+  (paginated), `GET /knowledge/{id}/lineage`.
+- Per-registry CRUD: Skills (`/skills`, `GET /entities/{id}/skills`),
+  Certifications (`/certifications`), FamilyRecords
+  (`/family-records`), LegacyAssets (`/legacy-assets`) — create, list
+  with `?entity_id=`, get, PATCH, delete.
+- Evidence: `POST /knowledge/{id}/evidence` (attach),
+  `GET /knowledge/{id}/evidence` (list).
+- Inventory: `GET /entities/{id}/knowledge-inventory` — counts and
+  lists of skills, certifications, and knowledge assets.
+- Audit log: `GET /vault/audit-log` (filter by `event_type`,
+  `entity_id`, `record_type`, `record_id`).
+
+### The four Sprint 2 missing-edge queries
+
+`GET /api/v1/vault/queries/` — each scoped to the caller's
+accessible entities, with an optional `?entity_id=` filter:
+
+- `knowledge-no-evidence` — KnowledgeAssets with `evidence_count = 0`.
+- `skills-no-evidence` — Skills with no linked KnowledgeAsset
+  evidence (no asset, or an asset with no evidence).
+- `certifications-no-evidence` — Certifications with no evidence.
+  Sprint 3 gave Certification the same `knowledge_asset_id` link
+  Skill has, so this is now evidenced through the real link; the
+  (entity, category `"Certification"`, title) match is kept as a
+  fallback for certifications created before the link existed.
+  The graph query (`/graph/queries/...`) uses the link only.
+- `legacy-no-preservation-status` — LegacyAssets with no
+  `preservation_status` set (NULL or empty).
+
+The five queries from the earlier Sprint 2 brief
+(skills-not-linked-to-revenue, knowledge-not-linked-to-opportunities,
+family-without-preservation-plans, certifications-not-utilized,
+documents-without-graph-relationships) are **not** implemented as
+stated: they need opportunity links, revenue links, utilization, and
+graph relationships that are not in Sprint 2's scope. They become
+fully answerable in Sprint 3 (graph) and Sprint 4 (opportunity); the
+four endpoints above are their Sprint 2 equivalents.
+
+### Tests
+
+`tests/test_vault.py` — 37 tests: the eight formal acceptance tests
+(AT-001 Knowledge Asset Lifecycle, AT-002 Evidence Attachment,
+AT-003 Skill Verification, AT-004 Legacy Asset Preservation,
+AT-005 Family Record Retrieval, AT-006 Entity Knowledge Inventory,
+AT-007 State Vector Event Generation, AT-008 OpenAPI Contract) plus
+per-model CRUD and validation, lineage, audit-log, the four queries,
+and ownership / 404 / 422 / 401 coverage.
+
+Run the full suite with `python -m pytest -q` (114 tests at the
+time Sprint 2 landed — the current count is in the Sprint 3
+section below). The endpoint tests use an
+in-memory SQLite database via aiosqlite (test-only — production runs
+PostgreSQL) with foreign keys enabled so the CASCADE / SET NULL
+delete rules are exercised.
+
+## Engine v1 — Sprint 3
+
+Branch: **`freedom-gps-engine-v1`** (Engineering Order 003).
+
+Sprint 3 adds the Knowledge Graph Layer — the relationships of
+Engine v1. Every major object becomes a graph node, the links
+between them become graph edges, and a PostgreSQL-backed
+abstraction layer (`IGraphRepository`) stands between the business
+services and the storage so Neo4j can replace PostgreSQL later
+without rewriting the services. No Opportunity Engine, Trust
+Engine, Prosperity Engine, Forecasting, Recommendations, AI
+reasoning, or graph visualization in this sprint; no new scores.
+
+### Models (`app/models/graph.py`, migration `alembic/versions/0005_graph.py`)
+
+- **GraphNode** — one node per source record: `node_type`
+  (Entity, KnowledgeAsset, Skill, Certification, EvidenceRecord,
+  FamilyRecord, LegacyAsset), `source_id` (the source record's id),
+  `node_metadata` (JSON copy of the record's identifying fields —
+  name, title, category, …; the source record is the truth and
+  sync refreshes it). `(node_type, source_id)` is unique.
+- **GraphEdge** — one directed edge between two nodes:
+  `from_node_id`, `to_node_id`, `relationship_type` (OWNS,
+  HAS_SKILL, HAS_CERTIFICATION, HAS_EVIDENCE, HAS_RECORD,
+  HAS_LEGACY, RELATED_TO, MEMBER_OF, CONTRIBUTES_TO), `confidence`
+  (0–1, default 1.0), `source`, `created_at`. Lineage lives on the
+  edge itself: confidence, source, and created_at (AT-307).
+  `(from_node_id, to_node_id, relationship_type)` is unique.
+  Deleting a node deletes its edges (CASCADE).
+
+### The abstraction layer (`app/graph/`)
+
+- **IGraphRepository** (`app/graph/interface.py`) — the storage
+  contract: `create_node`, `get_node`, `get_node_by_source`,
+  `list_nodes`, `update_node_metadata`, `delete_node`,
+  `create_edge`, `get_edge`, `get_edge_by_triple`, `list_edges`,
+  `delete_edge`, `neighbors`. Storage primitives only; traversal,
+  path finding, sync, and queries live in the service so they work
+  against any backend. Repository methods flush; they do not
+  commit — the caller owns the transaction.
+- **PostgresGraphRepository** (`app/graph/postgres.py`) — the real
+  Engine v1 backend, backed by the `graph_nodes` / `graph_edges`
+  tables.
+- **Neo4jGraphRepository** (`app/graph/neo4j.py`) — a stub with the
+  same interface. Constructing it raises `NotImplementedError`
+  ("Neo4j is not configured for Engine v1"). It imports no neo4j
+  driver and requires no Neo4j server.
+- **GraphService** (`app/graph/service.py`) — the business service.
+  It depends ONLY on `IGraphRepository` (AT-308: the service module
+  imports no backend, and the acceptance test runs the service's
+  node / edge / traversal / path logic against an in-memory stub
+  repository). It owns idempotent node / edge get-or-create, the
+  automatic sync, the backfill, traversal, path finding, the
+  inventory queries, and audited manual relationships.
+
+### Automatic graph maintenance
+
+Node creation is automatic: when a record is created through the
+API, its graph node and edges are created with it (the hooks live
+in `app/api/vault.py` and `app/api/entities.py`).
+
+- **Entity** → its node. **KnowledgeAsset** → its node + OWNS from
+  its entity. **Skill** → its node + OWNS and HAS_SKILL from its
+  entity. **Certification** → its node + OWNS and HAS_CERTIFICATION.
+  **FamilyRecord** → its node + OWNS and HAS_RECORD. **LegacyAsset**
+  → its node + OWNS and HAS_LEGACY.
+- **EvidenceRecord** → its node + HAS_EVIDENCE from its asset, and
+  from every Skill / Certification linked to that asset.
+- **EntityRelationship** (Sprint 1) → one graph edge between the
+  two entity nodes: owns → OWNS, member_of → MEMBER_OF,
+  contributes_to → CONTRIBUTES_TO, works_with → RELATED_TO,
+  inherits → RELATED_TO.
+- Deleting a record deletes its graph node (edges go with it);
+  deleting a KnowledgeAsset also deletes its evidence nodes.
+  PATCHing a Skill / Certification's `knowledge_asset_id` resyncs
+  its evidence edges; only auto-created edges are ever removed by
+  a sync — a relationship a user made by hand is theirs to keep
+  (or delete through the API).
+- **POST /api/v1/graph/sync** backfills nodes and edges for every
+  record on every entity the caller may read. Idempotent: a second
+  run creates nothing. It returns `nodes_created`, `edges_created`,
+  and the totals.
+
+### The four graph inventory queries
+
+`GET /api/v1/graph/queries/` — each scoped to the caller's
+accessible entities, with an optional `?entity_id=` filter. The
+graph answers them: a record is unevidenced when its node has no
+outgoing HAS_EVIDENCE edge.
+
+- `skills-no-evidence` — Skills with no evidence.
+- `certifications-no-evidence` — Certifications with no evidence,
+  through the real asset link.
+- `knowledge-no-evidence` — KnowledgeAssets with no evidence.
+- `legacy-no-preservation-status` — LegacyAssets with no
+  `preservation_status` set. The node set comes from the graph;
+  the status itself is a source-record attribute, so the filter
+  reads the source rows.
+
+The old `/api/v1/vault/queries/` endpoints remain as-is (backward
+compatibility) — the graph queries are the canonical
+implementation going forward, and both return the same result
+sets for the four queries.
+
+### The Certification link fix
+
+Sprint 2's `certifications-no-evidence` matched by
+(entity, category `"Certification"`, title) because Certification
+had no asset link. Sprint 3 gives Certification an optional
+`knowledge_asset_id` FK to its KnowledgeAsset representation
+(migration `0005_graph.py`), the same pattern Skill has had since
+Sprint 2. The graph query uses the real link; the Vault query uses
+link OR title match so certifications created before the link
+existed keep their old results.
+
+### API (`app/api/graph.py`, schemas in `app/schemas/graph.py`)
+
+All endpoints live under `/api/v1/graph` and require auth. A node
+is readable when its source record's entity is readable; writing
+a relationship requires owning the from-node's entity (the Sprint 1
+ownership rule, unchanged). There is no POST `/graph/nodes` in
+Sprint 3 — nodes are created automatically.
+
+- Node API: `GET /graph/nodes` (filter with `?node_type=`),
+  `GET /graph/nodes/{id}`, `GET /graph/entities/{id}/graph` (the
+  entity's subgraph: its node, its 1-hop neighbors, and the edges
+  between them), `GET /graph/nodes/{id}/traverse?depth=2`
+  (breadth-first walk), `GET /graph/path?from_node_id=&to_node_id=`
+  (shortest path, AT-305).
+- Relationship API: `POST /graph/relationships` (validates both
+  nodes exist, rejects a self-edge with 400 and a duplicate with
+  409, writes a `graph_relationship_created` audit entry),
+  `GET /graph/relationships` (filter with `?from_node_id=`,
+  `?to_node_id=`, `?relationship_type=`),
+  `DELETE /graph/relationships/{id}` (writes a
+  `graph_relationship_deleted` audit entry).
+- `POST /graph/sync` — the backfill (see above).
+- The four inventory queries (see above).
+
+### Tests
+
+`tests/test_graph.py` — 26 tests: the eight formal acceptance
+tests (AT-301 Node Creation, AT-302 Relationship Creation, AT-303
+Evidence Connection, AT-304 Knowledge Inventory Query, AT-305
+Graph Traversal, AT-306 Audit Verification, AT-307 Lineage
+Verification, AT-308 Repository Abstraction) plus automatic nodes
+and edges for every record type, entity-relationship graph edges,
+manual relationship validation (400 / 404 / 409 / 422), subgraph,
+the four graph queries, the Certification link fix, node deletion
+with its record, ownership (403), the OpenAPI contract, and the
+sync backfill with idempotency.
+
+Run the full suite with `python -m pytest -q` (140 tests: the 114
+from Sprints 1–2 plus 26 new graph tests).
+
+## Engine v1 — Sprint 4
+
+The Opportunity Engine — the first discovery capability. Mission:
+What is missing? What should be connected? What creates value
+next? The system now has Identity, State Vector, Memory, and
+Relationships; the next logical capability is Discovery, and this
+is where Freedom GP$ first starts producing value that users can
+actually see.
+
+### Model (`app/models/opportunity.py`, migration `alembic/versions/0006_opportunities.py`)
+
+One row per discovered gap. `Opportunity` carries `entity_id`,
+`title`, `description`, `opportunity_type` (Skill Opportunity,
+Asset Opportunity, Knowledge Opportunity, Relationship
+Opportunity, Legacy Opportunity), `confidence` (the detector's
+certainty in the finding, 0–1 — not a value estimate), `status`
+(detected, accepted, dismissed, realized), and its lineage:
+`detector` (which detector found it, or "manual"), `source_type`
+and `source_id` (the record the opportunity refers to — a Skill,
+KnowledgeAsset, LegacyAsset, Certification, or "GraphCluster" for
+a disconnected cluster, which has no single source record and
+carries `source_id` None), and an optional `evidence_id` link.
+Creation and status changes write AuditLog entries.
+
+### The six detectors (`app/services/opportunity_service.py`)
+
+All six read the graph — they use GraphService and the
+IGraphRepository primitives, never raw table filters where a graph
+query expresses the finding. D1 and D5 reuse the Sprint 3 graph
+inventory queries.
+
+| Detector | Finding | Type | Confidence |
+|---|---|---|---|
+| D1 `skills_no_evidence` | Skill with no outgoing HAS_EVIDENCE edge | Skill Opportunity | 0.9 |
+| D2 `skills_evidence_no_utilization` | Skill with evidence but no edges beyond ownership and evidence | Skill Opportunity | 0.7 |
+| D3 `certifications_evidence_no_utilization` | Certification with evidence but no edges beyond ownership and evidence | Knowledge Opportunity | 0.7 |
+| D4 `knowledge_assets_no_relationships` | KnowledgeAsset whose only graph edge is the OWNS edge from its entity (zero edges counts too) | Knowledge Opportunity — Asset Opportunity when the asset's category is "Legacy Asset" | 0.85 |
+| D5 `legacy_no_preservation_status` | LegacyAsset with no preservation_status set | Legacy Opportunity | 0.9 |
+| D6 `disconnected_clusters` | A connected component with no entity node — nodes connected to each other but not to the ledger (BFS over the graph layer) | Relationship Opportunity | 0.8 |
+
+Detector confidences are illustrative — the detector's certainty
+in the finding, not a value estimate.
+
+> **The honest limit on D2 and D3:** the system has no
+> utilization data — Sprint 2 deliberately has no `utilized`
+> field on Skill or Certification, and there is no revenue
+> linkage — so "no utilization" is operationalized as "verified
+> capability that is not connected to any opportunity, asset, or
+> other value-producing relationship". True utilization tracking
+> (revenue linkage) is a later concern, not Sprint 4.
+
+> **A D4 caveat:** an asset that serves as a Skill /
+> Certification's KnowledgeAsset representation has no graph edge
+> to its holder (Sprint 3 does not record that link as an edge),
+> so it can still be flagged here. The representation link is a
+> source-table link, not a graph relationship.
+
+### Detection run + idempotency
+
+`POST /api/v1/opportunities/detect` runs all six detectors for
+one entity. It is idempotent: a finding does not duplicate an
+open (detected or accepted) opportunity for the same detector +
+source record — D6 is keyed by its canonical cluster description
+("Disconnected cluster of N nodes (...). Members: ..."). A gap
+that closes dismisses its open opportunity automatically, with a
+note appended to the description and an audit entry
+(`opportunity_auto_dismissed`) — except a cluster opportunity
+whose description the user rewrote, which is left alone (the
+description is the cluster fingerprint and can no longer be
+matched). An accepted opportunity whose gap closes is dismissed
+the same way; it is never auto-marked realized, because the
+system cannot know why the gap closed.
+
+### API (`app/api/opportunities.py`, schemas in `app/schemas/opportunity.py`)
+
+- `POST /api/v1/opportunities` — create by hand (201; detector
+  defaults to "manual"; audited).
+- `GET /api/v1/opportunities` — list; filter with `?entity_id=`,
+  `?status=`, `?opportunity_type=`.
+- `GET /api/v1/opportunities/{id}` — one opportunity, with its
+  lineage (detector, source record, timestamps).
+- `PATCH /api/v1/opportunities/{id}` — update; a status change
+  writes an audit entry.
+- `DELETE /api/v1/opportunities/{id}` — delete (204).
+- `GET /api/v1/entities/{entity_id}/opportunities` — one entity's
+  opportunities.
+- `POST /api/v1/opportunities/detect` — run all six detectors for
+  one entity; returns the opportunities created and the ones
+  auto-dismissed.
+
+### Tests
+
+`tests/test_opportunities.py` — 21 tests: the eight formal
+acceptance tests (AT-401 Hidden Skill Detection, AT-402 Knowledge
+Gap Detection, AT-403 Legacy Preservation Detection, AT-404
+Opportunity CRUD, AT-405 Opportunity Lineage, AT-406 Opportunity
+Confidence, AT-407 Opportunity Audit, AT-408 Graph Gap Query)
+plus D2/D3 (evidence but no utilization), the D4 Legacy Asset
+category mapping, idempotency, auto-dismiss on gap close (with
+the D1 → D2 detector transition), open gaps surviving a rerun,
+accepted opportunities not duplicating, validation and ownership
+(422 / 404 / 403), list filters, and the OpenAPI contract.
+
+Run the full suite with `python -m pytest -q` (161 tests: the 140
+from Sprints 1–3 plus 21 new opportunity tests).
+
+## Engine v1 — Sprint 5
+
+The Validation Engine — the science layer. THE MISSION IS NOT TO
+VALIDATE MODELS YET. The mission is to build the machinery that
+allows validation to occur. Without Sprint 5, Opportunity
+detection is just an algorithm; with Sprint 5, Opportunity
+detection becomes a hypothesis that can be tested. Nothing in
+this sprint validates a model; it records the evidence
+validation will read.
+
+### The six registries (`app/models/registry.py`, migration `alembic/versions/0007_validation_registry.py`)
+
+| Registry | Table | What it stores |
+|---|---|---|
+| Model Registry | `registry_models` | Every model: `model_id`, `name` (unique), `version`, `description`, `validation_level`, `status`, `owner` |
+| Score Registry | `registry_scores` | The runtime registry and the single source of truth for a score's current formula, version, and status: `score_name` (the key), `current_formula` (the formula as a text record, NOT an implementation), `current_status`, `validation_level`, `active_version` |
+| Prediction Registry | `registry_predictions` | Hypotheses: `prediction_id`, `entity_id`, `model_id`, `prediction_date`, `forecast_horizon` (a duration string — `"30d"`, `"90d"`, `"1y"`), `predicted_outcome` (JSON), `confidence` (0–1) |
+| Outcome Registry | `registry_outcomes` | Actual results: `outcome_id`, `prediction_id`, `actual_result` (JSON, same shape as the prediction), `recorded_date`, `notes` |
+| Calibration Registry | `registry_calibration` | `record_id`, `model_id`, `observed_value`, `predicted_value`, `error`, plus nullable `prediction_id` / `outcome_id` links when generated from a pair |
+| Drift Registry | `registry_drift` | Foundational drift only: `model_id`, `metric`, `baseline`, `current`, `change`, `status` |
+
+Validation levels (Framework v1.0, section 4.1): Conceptual,
+Prototype, Experimental, Validated, Institutional. A measurement
+moves up the hierarchy only by evidence, never by assertion.
+Model status: active, deprecated, retired.
+
+### The seed
+
+Migration 0007 seeds the nine named models of Engineering Order
+005 into the Model Registry and the matching nine entries into
+the Score Registry — GP$ Index, Prosperity Score, Trust Score,
+Opportunity Score, Hidden Asset Multiplier, Stinnes Score, Asset
+Flipper Score, Anti-Fragility Index, Regulatory Friction Score —
+all at validation level Experimental, all active. That is the
+honest current state per the Framework's Appendix A: "No Freedom
+GP$ score has yet reached Level 3 (Validated) or Level 4
+(Institutional), because no real-world validation data exists for
+them." Five of the nine (Hidden Asset Multiplier, Stinnes Score,
+Asset Flipper Score, Anti-Fragility Index, Regulatory Friction
+Score) are listed in Appendix A at Level 2 Experimental; the
+other four are composite Canon scores not listed there and take
+the same honest Experimental default. Where an Engine v1
+reference implementation exists, the Score Registry entry quotes
+its formula (Stinnes, Asset Flipper, Anti-Fragility, Regulatory
+Friction, Hidden Asset Multiplier); where none exists yet (Trust
+Score, Opportunity Score), the entry says so plainly — the Score
+Registry is now the source of truth, and the formula record is
+completed here first, not invented elsewhere. The in-code source
+of the seed list is `SEED_MODELS` in
+`app/services/registry_service.py`; `seed_registry()` is
+idempotent and is what tests exercise.
+
+### Calibration
+
+Calibration Error: **CE = Observed − Predicted** (Framework
+v1.0, section 5.3). `error` is computed server-side on create,
+never client-supplied — the create schema has no `error` field,
+so a client-supplied value is ignored and the server's value is
+what is stored. `POST /api/v1/registry/calibration/from-prediction`
+generates a record from a prediction + outcome pair: the outcome
+must belong to the prediction (else 422), the model comes from
+the prediction, and the numeric values are read from the JSON —
+a top-level number, or an object with a numeric `"value"` key.
+Anything else is a 422; the machinery refuses to guess what the
+number is.
+
+### Drift (foundational only)
+
+No advanced drift analytics in Sprint 5. `change` is computed
+server-side (`current − baseline`) and `status` is derived from
+the relative change |current − baseline| / |baseline|: normal at
+<= 5%, warning at > 5% and <= 20%, critical above 20%. A zero
+baseline has no relative change to measure: any nonzero current
+is critical, a zero current is normal.
+
+### Version tracking and the one-outcome rule
+
+When a model's version is updated, the previous version is
+preserved as a `ModelVersionHistory` row (version, description,
+validation level) before the model row changes, retrievable at
+`GET /api/v1/registry/models/{model_id}/versions` (AT-506). A
+PATCH that does not change the version adds no history row.
+
+One outcome per prediction: a second outcome for the same
+prediction is rejected with 409 Conflict, never silently
+overwritten — the first recorded result is the evidence, and
+replacing it would rewrite history. Deleting a model cascades
+to its version history, predictions, calibration records, and
+drift records (they are evidence about that model); deleting a
+prediction cascades to its outcomes.
+
+### Audit + lineage
+
+Every registry create/update/delete writes an AuditLog entry
+(AT-505): `model_registered`, `model_updated`,
+`model_version_changed`, `model_deleted`, `score_registered`,
+`score_updated`, `score_deleted`, `prediction_created`,
+`prediction_updated`, `prediction_deleted`,
+`outcome_recorded`, `outcome_updated`, `outcome_deleted`,
+`calibration_recorded`, `calibration_deleted`,
+`drift_recorded`, `drift_deleted`. Predictions and outcomes are
+entity-scoped — reads follow the Sprint 1 rule (own entities
+plus shared ones) and writes require owning the entity. Models,
+scores, calibration, and drift are global registry records any
+authenticated user may read.
+
+### API (`app/api/registry.py`, schemas in `app/schemas/registry.py`)
+
+All endpoints require auth, under `/api/v1/registry`: models
+(POST, GET, GET `/{model_id}`, GET `/{model_id}/versions`,
+PATCH, DELETE), scores (POST, GET, GET `/{score_name}`, PATCH,
+DELETE — `score_name` is the key and cannot be renamed),
+predictions (POST, GET, GET `/{prediction_id}`, PATCH, DELETE),
+outcomes (POST, GET, GET `/{outcome_id}`, PATCH, DELETE),
+calibration (POST, POST `/from-prediction`, GET, GET
+`/{record_id}`, DELETE — no PATCH: calibration records are
+immutable evidence), drift (POST, GET, GET `/{record_id}`,
+DELETE — no PATCH, same reason).
+
+### Tests
+
+`tests/test_registry.py` — 27 tests: the eight formal
+acceptance tests (AT-501 Model Registration, AT-502 Prediction
+Lifecycle, AT-503 Calibration Record, AT-504 Validation Level
+Update, AT-505 Registry Lineage, AT-506 Model Version Tracking,
+AT-507 Drift Record Creation, AT-508 OpenAPI Validation) plus
+the seed (nine models + nine scores, idempotent), the Score
+Registry as source of truth (formula / version / status CRUD,
+duplicate 409), the one-outcome-per-prediction rule (409, first
+outcome preserved), server-side computation (calibration error
+ignoring a client-supplied value, drift thresholds including the
+zero-baseline edge), from-prediction with object `"value"`
+outcomes, mismatched-outcome and non-numeric 422s, validation
+(422 / 404), ownership (403), and auth (401).
+
+Run the full suite with `python -m pytest -q` (188 tests: the
+161 from Sprints 1–4 plus 27 new registry tests).
+
+## Engine v1 — Sprint 6
+
+Sovereign Dashboard + OmniSight Assistant (Engineering Order
+006). This is the MVP-completion sprint: the first time Freedom
+GP$ becomes visible to a user. Up to now the system built
+Identity, State Vector, Memory, Relationships, Discovery,
+Validation — those six capabilities are the engine. Sprint 6 is
+the cockpit.
+
+Architecture (enforced): User → Sovereign Dashboard → OmniSight
+Assistant → Engine Services → Knowledge Graph → Validation
+Layer. NO direct database access from the dashboard or
+assistant layers — every interaction flows through the
+existing services (State Vector, Knowledge Vault, Opportunity,
+Registry, Graph). Where a needed read did not exist in a
+service, a service method was added (`vault_service` list
+helpers: knowledge assets with search/filter, skills,
+certifications, family records, legacy assets, evidence for an
+entity/asset, audit log for an entity). No new tables, no
+migration.
+
+### The Sovereign Dashboard
+
+Six modules, assembled by `app/services/dashboard_service.py`
+from the existing services — no new scoring, no new models:
+
+1. **Executive Overview** (`GET /api/v1/dashboard`): entity,
+   latest state vector, open opportunity count, knowledge asset
+   count, legacy asset count, validation status (models by
+   validation level). One-screen summary.
+2. **Complete Ledger** (`GET /api/v1/dashboard/ledger`): the
+   five capitals Financial, Human, Social, Resource, Legacy,
+   read from Ω(t), each with a trend indicator computed from
+   state vector history (latest vs previous snapshot: up / down
+   / flat). Trend indicators only — no new scoring. A component
+   unmeasured in either snapshot reports flat with no delta.
+3. **State Vector Explorer**
+   (`GET /api/v1/dashboard/state-vector`): Ω(t) current value
+   (all ten components), latest changes (components that moved
+   since the previous snapshot, with deltas), and history.
+4. **Opportunity Center**
+   (`GET /api/v1/dashboard/opportunities`): open (detected +
+   accepted), dismissed, resolved (realized) opportunities,
+   each with source (detector + source record), confidence,
+   evidence, and reason (description). Everything is
+   explainable.
+5. **Knowledge Vault** (`GET /api/v1/dashboard/vault`):
+   knowledge assets, skills, certifications, family records,
+   legacy assets, evidence. Searchable (`?q=` matches title or
+   description) and filterable (`?category=` for knowledge
+   assets). Auditable — assets carry their lineage.
+6. **Validation Center** (`GET /api/v1/dashboard/validation`):
+   models, validation levels, predictions, outcomes,
+   calibration errors, drift records — all from the Sprint 5
+   registries. This is the differentiator: most apps hide
+   uncertainty; Freedom GP$ exposes it.
+
+Plus `GET /api/v1/dashboard/audit` (an entity's audit history,
+newest first). All dashboard endpoints require auth and are
+entity-scoped (the Sprint 1 read rule: own entities plus shared
+ones).
+
+The dashboard page (`GET /dashboard`, HTML) is the literal
+"first window into the engine": one page, six sections,
+rendered from the SAME dashboard service as the JSON endpoints
+(`app/api/dashboard_page.py` — a plain template string with
+`html.escape` on every user-controlled string; Jinja2 is not a
+project dependency and the brief allows this approach). No JS
+framework, no external assets. With no `entity_id`, the page
+shows the caller's first accessible entity.
+
+### The OmniSight Assistant
+
+`POST /api/v1/assistant/ask` — body `{question, entity_id,
+opportunity_id?, record_id?, record_type?}`. The assistant is
+DETERMINISTIC and EXPLAINABLE: rule-based intent matching
+(`app/services/assistant_service.py`, `match_intent` — normalized
+lowercase, punctuation stripped, most specific patterns first)
+to one of eight supported intents. NO LLM, NO AI reasoning,
+NOTHING PREDICTIVE. Each intent maps to a specific service
+query; the response is `{intent, answer, data, evidence,
+sources}` — `sources` names the services that produced the
+answer, so every response is traceable. An unknown question is
+never guessed at: it returns a structured `unsupported`
+response that says plainly it cannot answer that yet and lists
+the eight supported questions.
+
+The eight supported questions:
+
+| # | Question | Intent | Service query |
+|---|---|---|---|
+| 1 | Show my opportunities. | `show_opportunities` | Opportunity service: the entity's open opportunities |
+| 2 | What changed in my ledger? | `ledger_changes` | State vector history: which components moved and by how much (one snapshot → says so plainly) |
+| 3 | What legacy assets lack preservation? | `legacy_no_preservation` | Vault query: legacy assets with no preservation status (Detector 5 data) |
+| 4 | Show skills without evidence. | `skills_no_evidence` | Vault query: skills with no evidence (Detector 1 data) |
+| 5 | Show certifications without evidence. | `certifications_no_evidence` | Vault query: certifications with no evidence. NOTE: distinct from Sprint 4 Detector 3, which is certifications WITH evidence but no utilization |
+| 6 | What models are experimental? | `experimental_models` | Model Registry: validation_level Experimental |
+| 7 | Why was this opportunity created? | `opportunity_reason` | With `opportunity_id`: that opportunity's detector, source record, confidence, reason. Without: the six detectors explained + recent opportunities to choose from |
+| 8 | What evidence supports this record? | `record_evidence` | With `record_id` + `record_type` (KnowledgeAsset, Skill, Certification): the evidence linked to that record. Without: what evidence is + recent knowledge assets to choose from |
+
+### Tests
+
+`tests/test_dashboard.py` (20 tests) and
+`tests/test_assistant.py` (15 tests): the eight formal
+acceptance tests (AT-601 Dashboard Loads, AT-602 State Vector
+Display, AT-603 Opportunity Feed, AT-604 Knowledge Vault View,
+AT-605 Validation Center, AT-606 OmniSight Question, AT-607
+Evidence Traceability, AT-608 Audit Visibility) plus ledger
+trends (up / flat / unmeasured), opportunity grouping and
+evidence enrichment, vault search/filter, the HTML page (all
+six sections, no-entity-id default, 401), ownership (403),
+unknown entity (404), all eight assistant intents (including
+the single-snapshot ledger case, the opportunity-reason and
+record-evidence flows with and without ids, the skill with no
+linked asset), the unknown-question behavior (unsupported +
+eight supported questions), intent matching (case/punctuation,
+plurals, unknown), and the OpenAPI contract.
+
+Run the full suite with `python -m pytest -q` (223 tests: the
+188 from Sprints 1–5 plus 35 new dashboard + assistant tests).
+
+## Freedom GP$ Engine v1 MVP — COMPLETE
+
+Sprint 6 closes the Engine v1 MVP. The complete system:
+
+| Sprint | Capability | Tag | Tests |
+|---|---|---|---|
+| 1 | Identity + State Vector Ω(t) | — | 77 |
+| 2 | Memory + Knowledge Vault | `v0.1-foundation` | 114 |
+| 3 | Knowledge Graph | `v0.2-graph` | 140 |
+| 4 | Opportunity Engine (Discovery) | `v0.3-opportunity` | 161 |
+| 5 | Validation Engine | `v0.4-validation` | 188 |
+| 6 | Sovereign Dashboard + OmniSight Assistant (Experience) | `v0.5-mvp` | 223 |
+
+Identity ✅, State Vector ✅, Memory ✅, Relationships ✅,
+Discovery ✅, Validation ✅, Experience ✅. Freedom GP$ is now
+self-measuring, self-auditing, evidence-generating — and, for
+the first time, visible to a user.
+
+What comes immediately after is NOT more features, NOT Engine
+v2, NOT new scores. The next phase is Real Users, Real Data,
+Real Predictions, Real Outcomes, Real Validation — because the
+first validated Freedom GP$ metric is worth more than a hundred
+unvalidated features.
+
 ## Endpoints
 
 ### Meta
@@ -124,6 +824,149 @@ no database and no auth, so the suite runs without a live PostgreSQL.
 | GET | `/api/v1/state-vector/{user_id}` | List the caller's snapshots, latest first |
 | GET | `/api/v1/state-vector/{user_id}/latest` | The caller's latest snapshot (404 when none recorded) |
 | POST | `/api/v1/state-vector/master-index` | Pure computation (no DB, no auth): GP$ Master Index + Unified Prosperity Equation for one supplied state vector |
+| POST | `/api/v1/state-vector/entities/{entity_id}` | Record one snapshot of an entity's state vector Ω(t) |
+| GET | `/api/v1/state-vector/entities/{entity_id}` | List an entity's snapshots, latest first |
+| GET | `/api/v1/state-vector/entities/{entity_id}/latest` | An entity's latest snapshot (404 when none recorded) |
+| GET | `/api/v1/state-vector/entities/{entity_id}/master-index` | GP$ Master Index + Unified Prosperity Equation from an entity's latest snapshot |
+
+### Entities (Engine v1 Sprint 1, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/entities` | Create an entity (Person, Family, Business, Nonprofit, Community); caller becomes owner |
+| GET | `/api/v1/entities` | List the caller's entities plus shared (unowned) ones; filter with `?type=` |
+| GET | `/api/v1/entities/{entity_id}` | One entity, with every relationship it participates in |
+| PATCH | `/api/v1/entities/{entity_id}` | Update name / description (owner only; type never changes) |
+| POST | `/api/v1/entities/{entity_id}/relationships` | Create a directed relationship from this entity (owns, member_of, works_with, inherits, contributes_to) |
+| GET | `/api/v1/entities/{entity_id}/relationships` | Every relationship the entity participates in, with direction |
+| GET | `/api/v1/entities/{entity_id}/neighbors` | Neighboring entities with the relationship that connects them |
+
+### Knowledge Vault (Engine v1 Sprint 2, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/knowledge` | Create a KnowledgeAsset (version 1; caller becomes `created_by`) |
+| GET | `/api/v1/knowledge/{asset_id}` | One KnowledgeAsset |
+| PUT | `/api/v1/knowledge/{asset_id}` | Replace a KnowledgeAsset (version increments) |
+| DELETE | `/api/v1/knowledge/{asset_id}` | Delete a KnowledgeAsset (its evidence goes with it) |
+| GET | `/api/v1/knowledge/{asset_id}/lineage` | Lineage: `created_by`, `source`, `version`, `last_updated`, `evidence_count` |
+| POST | `/api/v1/knowledge/{asset_id}/evidence` | Attach an EvidenceRecord to the asset |
+| GET | `/api/v1/knowledge/{asset_id}/evidence` | List the asset's evidence |
+| GET | `/api/v1/entities/{entity_id}/knowledge` | The entity's KnowledgeAssets, paginated |
+| GET | `/api/v1/entities/{entity_id}/knowledge-inventory` | Counts and lists of skills, certifications, knowledge assets |
+| POST | `/api/v1/skills` | Create a Skill (optional `knowledge_asset_id` links its evidence) |
+| GET | `/api/v1/skills` | List skills; filter with `?entity_id=` |
+| GET | `/api/v1/skills/{skill_id}` | One Skill |
+| PATCH | `/api/v1/skills/{skill_id}` | Update a Skill (e.g. `verified: true`) |
+| DELETE | `/api/v1/skills/{skill_id}` | Delete a Skill |
+| GET | `/api/v1/entities/{entity_id}/skills` | The entity's Skills, paginated |
+| POST | `/api/v1/certifications` | Create a Certification |
+| GET | `/api/v1/certifications` | List certifications; filter with `?entity_id=` |
+| GET | `/api/v1/certifications/{certification_id}` | One Certification |
+| PATCH | `/api/v1/certifications/{certification_id}` | Update a Certification |
+| DELETE | `/api/v1/certifications/{certification_id}` | Delete a Certification |
+| GET | `/api/v1/entities/{entity_id}/certifications` | The entity's Certifications, paginated |
+| POST | `/api/v1/family-records` | Create a FamilyRecord |
+| GET | `/api/v1/family-records` | List family records; filter with `?entity_id=` |
+| GET | `/api/v1/family-records/{record_id}` | One FamilyRecord |
+| PATCH | `/api/v1/family-records/{record_id}` | Update a FamilyRecord |
+| DELETE | `/api/v1/family-records/{record_id}` | Delete a FamilyRecord |
+| GET | `/api/v1/entities/{entity_id}/family-records` | The entity's FamilyRecords, paginated |
+| POST | `/api/v1/legacy-assets` | Create a LegacyAsset |
+| GET | `/api/v1/legacy-assets` | List legacy assets; filter with `?entity_id=` |
+| GET | `/api/v1/legacy-assets/{asset_id}` | One LegacyAsset |
+| PATCH | `/api/v1/legacy-assets/{asset_id}` | Update a LegacyAsset (setting `preservation_status` writes an audit entry) |
+| DELETE | `/api/v1/legacy-assets/{asset_id}` | Delete a LegacyAsset |
+| GET | `/api/v1/entities/{entity_id}/legacy-assets` | The entity's LegacyAssets, paginated |
+| GET | `/api/v1/vault/queries/knowledge-no-evidence` | KnowledgeAssets with no evidence |
+| GET | `/api/v1/vault/queries/skills-no-evidence` | Skills with no linked evidence |
+| GET | `/api/v1/vault/queries/certifications-no-evidence` | Certifications with no evidence |
+| GET | `/api/v1/vault/queries/legacy-no-preservation-status` | LegacyAssets with no preservation status |
+| GET | `/api/v1/vault/audit-log` | Audit entries; filter with `?event_type=`, `?entity_id=`, `?record_type=`, `?record_id=` |
+
+### Knowledge Graph (Engine v1 Sprint 3, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/graph/nodes` | Nodes the caller may read; filter with `?node_type=` |
+| GET | `/api/v1/graph/nodes/{node_id}` | One graph node |
+| GET | `/api/v1/graph/entities/{entity_id}/graph` | The entity's subgraph: its node, 1-hop neighbors, edges |
+| GET | `/api/v1/graph/nodes/{node_id}/traverse` | Breadth-first walk; `?depth=` (default 2, max 5) |
+| GET | `/api/v1/graph/path` | Shortest path; `?from_node_id=`, `?to_node_id=`, `?max_depth=` |
+| POST | `/api/v1/graph/relationships` | Create a relationship (self-edge 400, duplicate 409; audited) |
+| GET | `/api/v1/graph/relationships` | List relationships; filter with `?from_node_id=`, `?to_node_id=`, `?relationship_type=` |
+| DELETE | `/api/v1/graph/relationships/{edge_id}` | Delete a relationship (audited) |
+| POST | `/api/v1/graph/sync` | Backfill nodes + edges for all accessible records (idempotent) |
+| GET | `/api/v1/graph/queries/skills-no-evidence` | Skills with no evidence (graph) |
+| GET | `/api/v1/graph/queries/certifications-no-evidence` | Certifications with no evidence (graph, real link) |
+| GET | `/api/v1/graph/queries/knowledge-no-evidence` | KnowledgeAssets with no evidence (graph) |
+| GET | `/api/v1/graph/queries/legacy-no-preservation-status` | LegacyAssets with no preservation status (graph) |
+
+### Opportunity Engine (Engine v1 Sprint 4, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/opportunities` | Create an opportunity by hand (detector "manual"; audited) |
+| GET | `/api/v1/opportunities` | List; filter with `?entity_id=`, `?status=`, `?opportunity_type=` |
+| POST | `/api/v1/opportunities/detect` | Run all six detectors for one entity (idempotent; auto-dismisses closed gaps) |
+| GET | `/api/v1/opportunities/{opportunity_id}` | One opportunity, with lineage |
+| PATCH | `/api/v1/opportunities/{opportunity_id}` | Update; a status change writes an audit entry |
+| DELETE | `/api/v1/opportunities/{opportunity_id}` | Delete an opportunity |
+| GET | `/api/v1/entities/{entity_id}/opportunities` | One entity's opportunities |
+
+### Validation Registry (Engine v1 Sprint 5, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/registry/models` | Register a model (audited) |
+| GET | `/api/v1/registry/models` | List; filter with `?validation_level=`, `?status=` |
+| GET | `/api/v1/registry/models/{model_id}` | One registered model |
+| GET | `/api/v1/registry/models/{model_id}/versions` | Preserved previous versions, newest first |
+| PATCH | `/api/v1/registry/models/{model_id}` | Update; a version change preserves the previous version |
+| DELETE | `/api/v1/registry/models/{model_id}` | Delete a model (version history, predictions, calibration, drift cascade) |
+| POST | `/api/v1/registry/scores` | Register a score (audited) |
+| GET | `/api/v1/registry/scores` | List; filter with `?validation_level=` |
+| GET | `/api/v1/registry/scores/{score_name}` | One score — the source of truth for its formula, version, status |
+| PATCH | `/api/v1/registry/scores/{score_name}` | Update a score (score_name cannot be renamed) |
+| DELETE | `/api/v1/registry/scores/{score_name}` | Delete a score |
+| POST | `/api/v1/registry/predictions` | Store a hypothesis (entity must be owned; audited) |
+| GET | `/api/v1/registry/predictions` | List; filter with `?entity_id=`, `?model_id=` |
+| GET | `/api/v1/registry/predictions/{prediction_id}` | One prediction |
+| PATCH | `/api/v1/registry/predictions/{prediction_id}` | Update a prediction |
+| DELETE | `/api/v1/registry/predictions/{prediction_id}` | Delete a prediction (outcomes cascade) |
+| POST | `/api/v1/registry/outcomes` | Record an outcome — one per prediction (second is 409); audited |
+| GET | `/api/v1/registry/outcomes` | List; filter with `?prediction_id=` |
+| GET | `/api/v1/registry/outcomes/{outcome_id}` | One outcome |
+| PATCH | `/api/v1/registry/outcomes/{outcome_id}` | Update an outcome |
+| DELETE | `/api/v1/registry/outcomes/{outcome_id}` | Delete an outcome |
+| POST | `/api/v1/registry/calibration` | Record a calibration measurement (CE computed server-side; audited) |
+| POST | `/api/v1/registry/calibration/from-prediction` | Generate a calibration record from a prediction + outcome pair |
+| GET | `/api/v1/registry/calibration` | List; filter with `?model_id=` |
+| GET | `/api/v1/registry/calibration/{record_id}` | One calibration record |
+| DELETE | `/api/v1/registry/calibration/{record_id}` | Delete a calibration record |
+| POST | `/api/v1/registry/drift` | Record drift (change + status computed server-side; audited) |
+| GET | `/api/v1/registry/drift` | List; filter with `?model_id=`, `?status=` |
+| GET | `/api/v1/registry/drift/{record_id}` | One drift record |
+| DELETE | `/api/v1/registry/drift/{record_id}` | Delete a drift record |
+
+### Sovereign Dashboard (Engine v1 Sprint 6, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/v1/dashboard` | Executive Overview — entity, latest state vector, counts, validation status |
+| GET | `/api/v1/dashboard/ledger` | Complete Ledger — the five capitals with trend indicators |
+| GET | `/api/v1/dashboard/state-vector` | State Vector Explorer — Ω(t) current value, latest changes, history |
+| GET | `/api/v1/dashboard/opportunities` | Opportunity Center — open / dismissed / resolved, each with source, confidence, evidence, reason |
+| GET | `/api/v1/dashboard/vault` | Knowledge Vault — searchable (`?q=`), filterable (`?category=`) |
+| GET | `/api/v1/dashboard/validation` | Validation Center — models, predictions, outcomes, calibration errors, drift records |
+| GET | `/api/v1/dashboard/audit` | Audit history for the entity, newest first |
+| GET | `/dashboard` | The dashboard page (HTML) — one page, six sections |
+
+### OmniSight Assistant (Engine v1 Sprint 6, auth required)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/v1/assistant/ask` | Ask OmniSight one of the eight supported questions (deterministic, explainable; unknown questions return `unsupported`) |
 
 ## Scoring engines
 
@@ -181,9 +1024,23 @@ examples:
 ## Database entities (v1)
 
 User, Profile, Asset, Liability, CashFlow, HiddenAsset, ScoreSnapshot,
-Scenario, Report, OmniSightSignal, Recommendation, StateVector. See
-`alembic/versions/0001_initial.py` for the v1 schema and
-`alembic/versions/0002_state_vector.py` for the state vector table.
+Scenario, Report, OmniSightSignal, Recommendation, StateVector, Entity,
+EntityRelationship, KnowledgeAsset, EvidenceRecord, Skill,
+Certification, FamilyRecord, LegacyAsset, AuditLog, GraphNode,
+GraphEdge, Opportunity, RegistryModel, ModelVersionHistory,
+ScoreRegistry, Prediction, Outcome, CalibrationRecord, DriftRecord. See
+`alembic/versions/0001_initial.py` for the v1 schema,
+`alembic/versions/0002_state_vector.py` for the state vector table,
+`alembic/versions/0003_entities.py` for the Sprint 1 entity tables
+(plus `entity_id` on `state_vectors`),
+`alembic/versions/0004_vault.py` for the Sprint 2 Knowledge Vault
+tables and the audit log, and
+`alembic/versions/0005_graph.py` for the Sprint 3 graph tables (plus
+`knowledge_asset_id` on `certifications`), and
+`alembic/versions/0006_opportunities.py` for the Sprint 4
+opportunities table, and
+`alembic/versions/0007_validation_registry.py` for the Sprint 5
+validation registry tables (plus the nine-model seed).
 
 ## State Vector Ω(t)
 
@@ -241,6 +1098,8 @@ freedom-gps-v1/
 │   ├── models/            # SQLAlchemy 2.0 models (v1 entities)
 │   ├── schemas/           # Pydantic v2 request/response models
 │   ├── engines/           # pure scoring functions
+│   ├── services/          # database-backed services (Engine v1)
+│   ├── graph/             # IGraphRepository, Postgres + Neo4j repos, GraphService
 │   └── api/               # FastAPI routers
 ├── alembic/               # migrations (0001_initial creates all v1 tables)
 ├── tests/                 # pytest suite

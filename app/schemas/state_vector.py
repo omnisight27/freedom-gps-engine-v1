@@ -40,6 +40,7 @@ class StateVectorOut(BaseModel):
 
     id: int
     user_id: int
+    entity_id: int | None
     recorded_at: datetime
     financial: float | None
     human: float | None
