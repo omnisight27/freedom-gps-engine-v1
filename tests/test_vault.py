@@ -50,15 +50,21 @@ from app.schemas.vault import (
 
 # --- Enums and models (no database) ---
 def test_knowledge_categories():
-    """The ten KnowledgeAsset categories.
+    """The eleven KnowledgeAsset categories.
 
     "Prediction" was added by the OmniSight connector (EO 007A
     Phase A): a NexIntel pick is a prediction record, distinct
-    from "Research" and "Historical Record"."""
+    from "Research" and "Historical Record".
+
+    "Opportunity" was added by the OmniSight connector (EO 007A
+    Phase B): a SAM.gov contract solicitation from the loop's
+    nonprofit watch is an opportunity record — the KnowledgeAsset
+    representation of the Opportunity Record the import creates
+    alongside it."""
     assert {c.value for c in KnowledgeCategory} == {
         "Skill", "Certification", "Document", "Research", "Process",
         "Lesson", "Historical Record", "Family Record", "Legacy Asset",
-        "Prediction",
+        "Prediction", "Opportunity",
     }
 
 
