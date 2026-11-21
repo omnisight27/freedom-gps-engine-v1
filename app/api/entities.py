@@ -15,7 +15,7 @@ shared. Writes require ownership.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +23,10 @@ from app.auth import get_current_user
 from app.database import get_db
 from app.graph import build_graph_service
 from app.models.entity import Entity, EntityType
+from app.models.entity_resolution import (
+    REVIEW_STATUS_PENDING,
+    EntityResolutionReview,
+)
 from app.models.user import User
 from app.schemas.entity import (
     EntityCreate,
@@ -33,6 +37,13 @@ from app.schemas.entity import (
     RelationshipCreate,
     RelationshipDetailOut,
     RelationshipOut,
+    ReviewOut,
+)
+from app.services.entity_resolution import (
+    approve_review,
+    list_pending_reviews,
+    reject_review,
+    resolve_or_create,
 )
 from app.services.entity_service import (
     assert_entity_access,
@@ -55,21 +66,100 @@ async def create_entity(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Entity:
-    """Create an entity. The caller becomes its owner."""
-    entity = Entity(
-        type=payload.type.value,
+    """Create an entity — through the Phase C.1 resolver.
+
+    The caller becomes the owner of a NEW entity. When the name
+    resolves to an entity the caller can already see (L1 exact,
+    L2 normalized, L3 alias), the existing entity is returned
+    (still 201: the endpoint's contract is "ensure this entity
+    exists") with the incoming spelling recorded as an alias.
+    An L4 context candidate never auto-attaches: a new entity is
+    created and a review is queued instead.
+    """
+    result = await resolve_or_create(
+        db,
         name=payload.name,
-        description=payload.description,
+        entity_type=payload.type.value,
         owner_id=current_user.id,
+        user=current_user,
     )
-    db.add(entity)
-    await db.commit()
-    await db.refresh(entity)
-    # Sprint 3: the entity's graph node is created automatically.
+    entity = result.entity
+    # Refresh the node's metadata (an attach may have added an
+    # alias); the resolver already created the node for a new
+    # entity, and sync is idempotent.
     service = build_graph_service(db)
     await service.sync_entity(entity)
     await db.commit()
+    await db.refresh(entity)
     return entity
+
+
+@router.get("/resolution-reviews", response_model=list[ReviewOut])
+async def list_resolution_reviews_endpoint(
+    status: str = Query(default=REVIEW_STATUS_PENDING),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list:
+    """The human review queue (Phase C.1): L4 context
+    candidates awaiting an operator's approve or reject. Any
+    authenticated user may review — merges are audited with the
+    actor, and the engine has no RBAC (see the deployment
+    notes)."""
+    return await list_pending_reviews(db, status=status)
+
+
+@router.post(
+    "/resolution-reviews/{review_id}/approve", response_model=ReviewOut
+)
+async def approve_resolution_review(
+    review_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ReviewOut:
+    """Approve a pending review: merge the proposed entity into
+    the matched (canonical) one. Returns the review, now
+    approved."""
+    try:
+        await approve_review(db, review_id=review_id, user=current_user)
+    except ValueError as exc:
+        message = str(exc)
+        if "not found" in message or "no longer exists" in message:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=message
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=message
+        ) from exc
+    await db.commit()
+    return await db.get(EntityResolutionReview, review_id)
+
+
+@router.post(
+    "/resolution-reviews/{review_id}/reject", response_model=ReviewOut
+)
+async def reject_resolution_review(
+    review_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ReviewOut:
+    """Reject a pending review. The (proposed, matched) pair is
+    suppressed from future re-queuing — a rejection is a human
+    judgment that the two are different entities."""
+    try:
+        review = await reject_review(
+            db, review_id=review_id, user=current_user
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "not found" in message:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=message
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=message
+        ) from exc
+    await db.commit()
+    return review
 
 
 @router.get("", response_model=list[EntityOut])

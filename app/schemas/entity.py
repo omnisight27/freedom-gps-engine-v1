@@ -39,8 +39,33 @@ class EntityOut(BaseModel):
     name: str
     owner_id: int | None
     description: str | None
+    # Phase C.1 — Entity Resolution: the canonical display
+    # form, the known alias spellings, and the layer confidence
+    # that produced the canonical record.
+    canonical_name: str
+    aliases: list[str]
+    confidence_score: float
     created_at: datetime
     updated_at: datetime
+
+
+# --- Resolution reviews (Phase C.1) ---
+class ReviewOut(BaseModel):
+    """One row of the human review queue (L4 candidates)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    proposed_name: str
+    normalized_name: str
+    entity_type: str
+    matched_entity_id: int | None
+    layer: str
+    confidence: float
+    context: dict | None
+    status: str
+    created_at: datetime
+    resolved_at: datetime | None
 
 
 # --- Relationship ---

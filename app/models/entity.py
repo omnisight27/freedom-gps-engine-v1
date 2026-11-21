@@ -14,10 +14,19 @@ from __future__ import annotations
 
 import enum
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text, func
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+
+def _canonical_name_default(context):
+    """A directly-constructed Entity defaults its canonical name
+    to its name (the first-seen spelling). The resolver sets the
+    canonical name explicitly; this only covers construction
+    paths that do not go through the resolver."""
+    params = context.get_current_parameters()
+    return params.get("name") or ""
 
 
 class EntityType(str, enum.Enum):
@@ -48,6 +57,24 @@ class Entity(Base):
     # layer), matching the repo's style for type columns.
     type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Phase C.1 — Entity Resolution (One Entity = One Identity =
+    # One Node). canonical_name is the display form (first-seen
+    # spelling); aliases holds every other known spelling; the
+    # confidence_score is the layer confidence that produced the
+    # canonical record (1.0 for an exact or operator-created
+    # entity, lower for a resolved one).
+    canonical_name: Mapped[str] = mapped_column(
+        String(200),
+        nullable=False,
+        default=_canonical_name_default,
+        index=True,
+    )
+    aliases: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    confidence_score: Mapped[float] = mapped_column(
+        Float, nullable=False, default=1.0
+    )
     owner_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
         index=True,
